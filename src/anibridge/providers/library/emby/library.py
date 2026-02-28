@@ -20,13 +20,14 @@ from anibridge.library import (
     MediaKind,
 )
 from anibridge.library.base import MappingDescriptor
+from anibridge.utils.types import ProviderLogger
+from emby_client.models.base_item_dto import BaseItemDto
+
 from anibridge.providers.library.emby.client import EmbyClient
 from anibridge.providers.library.emby.webhook import (
     EmbyWebhook,
     EmbyWebhookNotificationType,
 )
-from anibridge.utils.types import ProviderLogger
-from emby_client.models.base_item_dto import BaseItemDto
 
 if TYPE_CHECKING:
     from starlette.requests import Request

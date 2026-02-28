@@ -4,8 +4,9 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-import anibridge.providers.library.emby as library_module
 import pytest
+
+import anibridge.providers.library.emby as library_module
 
 
 def _test_logger() -> logging.Logger:

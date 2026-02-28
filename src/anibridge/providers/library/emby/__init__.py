@@ -1,0 +1,1 @@
+"""Emby provider for AniBridge."""

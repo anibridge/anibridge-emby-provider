@@ -474,17 +474,23 @@ class EmbyClient:
             if self._items_api is None:
                 raise RuntimeError("Emby client has not been initialized")
 
+            params = {
+                "parent_id": parent_id,
+                "include_item_types": include_item_types,
+                "recursive": True,
+                "fields": ",".join(self.ITEM_FIELDS),
+                "enable_user_data": enable_user_data,
+                "enable_images": enable_images,
+                "is_played": is_played,
+                "genres": genres,
+            }
+            if ids is not None:
+                params["ids"] = ",".join(ids)
+            params = {key: value for key, value in params.items() if value is not None}
+
             response = self._items_api.get_users_by_userid_items(
                 self._user_id,
-                parent_id=parent_id,
-                include_item_types=include_item_types,
-                recursive=True,
-                fields=",".join(self.ITEM_FIELDS),
-                enable_user_data=enable_user_data,
-                enable_images=enable_images,
-                is_played=is_played,
-                genres=genres,
-                ids=",".join(ids) if ids else None,
+                **params,
             )
             return self._extract_items(response)
 

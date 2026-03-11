@@ -3,10 +3,14 @@
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import cast
 
+import emby_client
 import pytest
 
 import anibridge.providers.library.emby as library_module
+from anibridge.providers.library.emby.client import EmbyClient
 
 
 def _test_logger() -> logging.Logger:
@@ -164,6 +168,17 @@ def _history_tuple(item: FakeItem):
     if not last_played:
         return None
     return (item.id, _parse_date(last_played))
+
+
+class RecordingItemsApi:
+    """Record Emby item query kwargs for regression assertions."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def get_users_by_userid_items(self, user_id: str, **kwargs):
+        self.calls.append({"user_id": user_id, **kwargs})
+        return SimpleNamespace(items=[])
 
 
 @pytest.fixture()
@@ -345,3 +360,44 @@ async def test_season_and_episode_mapping_scopes(library_setup):
     assert len(episodes) == 1
     episode = episodes[0]
     assert episode.mapping_descriptors() == descriptors
+
+
+def test_fetch_section_items_omits_ids_when_no_key_filter():
+    """The Emby SDK must not receive unset query params as stringified None."""
+    client = EmbyClient(
+        logger=_test_logger(),
+        url="http://emby",
+        token="token",
+        user="demo",
+    )
+    items_api = RecordingItemsApi()
+    client._items_api = cast(emby_client.ItemsServiceApi, items_api)
+    client._user_id = "user-1"
+
+    section = cast(
+        emby_client.models.base_item_dto.BaseItemDto,
+        FakeItem(
+            id="sec-shows",
+            name="Shows",
+            type="CollectionFolder",
+            collection_type="tvshows",
+        ),
+    )
+
+    watched_items = client._fetch_section_items(section, require_watched=True)
+    all_items = client._fetch_section_items(section)
+
+    assert watched_items == []
+    assert all_items == []
+    assert len(items_api.calls) == 2
+
+    watched_call, all_items_call = items_api.calls
+    assert watched_call["parent_id"] == section.id
+    assert watched_call["is_played"] is True
+    assert "ids" not in watched_call
+    assert "genres" not in watched_call
+
+    assert all_items_call["parent_id"] == section.id
+    assert "is_played" not in all_items_call
+    assert "ids" not in all_items_call
+    assert "genres" not in all_items_call

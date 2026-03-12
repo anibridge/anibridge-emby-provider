@@ -51,4 +51,4 @@ A list of genres to constrain synchronization to. Leave empty/unset to include a
 
 `bool` (optional, default: `True`)
 
-When enabled, show/season/episode mappings are restricted to the section's highest-priority TV show metadata downloader from Jellyfin library options. For example, if the top TV metadata downloader is AniDB, only AniDB mapping descriptors will be considered for matching. When disabled, all metadata downloaders will be considered for matching. This option is enabled by default.
+When enabled, show/season/episode mappings are restricted to the section's highest-priority TV show metadata downloader from Emby library options. For example, if the top TV metadata downloader is AniDB, only AniDB mapping descriptors will be considered for matching. When disabled, all metadata downloaders will be considered for matching. This option is enabled by default.

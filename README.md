@@ -1,42 +1,54 @@
 # anibridge-emby-provider
 
-Emby library provider implementation for the AniBridge project.
+An [AniBridge](https://github.com/anibridge/anibridge) provider for [Emby](https://emby.media/).
+
+_This provider comes built-in with AniBridge, so you don't need to install it separately._
 
 ## Configuration
 
-### `url` (`str`)
+```yaml
+library_provider_config:
+  emby:
+    url: ...
+    token: ...
+    user: ...
+    # sections: []
+    # genres: []
+    # strict: true
+```
 
-The base URL of the Emby server (e.g., `http://localhost:8096`).
+### `url`
 
-### `token` (`str`)
+`str` (required)
 
-The Emby API token.
+The base URL of the Emby server (e.g., http://localhost:8096).
 
-### `user` (`str`)
+### `token`
 
-The Emby user to synchronize. This can be a user id or username.
+`str` (required)
 
-### `sections` (`list[str]`, optional)
+The Emby API token. You can generate this under your user settings in the Emby admin dashboard.
+
+### `user`
+
+`str` (required)
+
+The Emby user to synchronize. This can be a user id, username, or display name.
+
+### `sections`
+
+`list[str]` (optional, default: `[]`)
 
 A list of Emby library section names to constrain synchronization to. Leave empty/unset to include all sections.
 
-### `genres` (`list[str]`, optional)
+### `genres`
+
+`list[str]` (optional, default: `[]`)
 
 A list of genres to constrain synchronization to. Leave empty/unset to include all genres.
 
-### `strict` (`bool`, optional)
+### `strict`
 
-When enabled mapping matches are restricted to the section's highest-priority metadata fetcher from the Emby library options. For example, if the top TV metadata fetcher is TMDB, only TMDB mapping descriptors are considered for matching. This option is enabled by default.
+`bool` (optional, default: `True`)
 
-When disabled, all mapping descriptors are considered for matching in order of priority. This may result in more matches but can lead to less accurate mappings.
-
-```yaml
-library_provider_config:
-    emby:
-        url: ...
-        token: ...
-        user: ...
-        # sections: []
-        # genres: []
-        # strict: true
-```
+When enabled, show/season/episode mappings are restricted to the section's highest-priority TV show metadata downloader from Jellyfin library options. For example, if the top TV metadata downloader is AniDB, only AniDB mapping descriptors will be considered for matching. When disabled, all metadata downloaders will be considered for matching. This option is enabled by default.

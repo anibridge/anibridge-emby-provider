@@ -24,6 +24,7 @@ from anibridge.utils.types import ProviderLogger
 from emby_client.models.base_item_dto import BaseItemDto
 
 from anibridge.providers.library.emby.client import EmbyClient
+from anibridge.providers.library.emby.config import EmbyProviderConfig
 from anibridge.providers.library.emby.webhook import (
     EmbyWebhook,
     EmbyWebhookNotificationType,
@@ -158,7 +159,7 @@ class EmbyLibraryEntry(LibraryEntry["EmbyLibraryProvider"]):
                 continue
             descriptors.append((mapped, str(value), None))
 
-        if self._media_kind == MediaKind.SHOW and self._provider._strict:
+        if self._media_kind == MediaKind.SHOW and self._provider.parsed_config.strict:
             required_provider = self._provider._strict_show_provider_by_section.get(
                 self._section.key
             )
@@ -392,28 +393,9 @@ class EmbyLibraryProvider(LibraryProvider):
     def __init__(self, *, logger: ProviderLogger, config: dict | None = None) -> None:
         """Parse configuration and prepare provider defaults."""
         super().__init__(logger=logger, config=config)
-
-        url = self.config.get("url") or ""
-        token = self.config.get("token") or ""
-        user = self.config.get("user") or ""
-        if not url or not token or not user:
-            self.log.warning(
-                "Emby provider is missing one or more required credentials"
-            )
-            raise ValueError(
-                "The Emby provider requires 'url', 'token', and 'user' "
-                "configuration values"
-            )
-
-        self._client_url = str(url)
-        self._client_token = str(token)
-        self._client_user = str(user)
-        self._section_filter = list(self.config.get("sections") or [])
-        self._genre_filter = list(self.config.get("genres") or [])
-        self._strict = bool(self.config.get("strict", True))
+        self.parsed_config = EmbyProviderConfig.model_validate(config or {})
         self._client = self._create_client()
         self._user: LibraryUser | None = None
-
         self._sections: list[EmbyLibrarySection] = []
         self._section_map: dict[str, EmbyLibrarySection] = {}
         self._strict_show_provider_by_section: dict[str, str] = {}
@@ -429,7 +411,7 @@ class EmbyLibraryProvider(LibraryProvider):
         self._sections = self._build_sections()
         self._strict_show_provider_by_section.clear()
 
-        if self._strict:
+        if self.parsed_config.strict:
             for section in self._sections:
                 if section.media_kind != MediaKind.SHOW:
                     continue
@@ -599,9 +581,9 @@ class EmbyLibraryProvider(LibraryProvider):
         """Construct and return an Emby client for this provider."""
         return EmbyClient(
             logger=self.log,
-            url=self._client_url,
-            token=self._client_token,
-            user=self._client_user,
-            section_filter=self._section_filter,
-            genre_filter=self._genre_filter,
+            url=self.parsed_config.url,
+            token=self.parsed_config.token,
+            user=self.parsed_config.user,
+            section_filter=self.parsed_config.sections,
+            genre_filter=self.parsed_config.genres,
         )

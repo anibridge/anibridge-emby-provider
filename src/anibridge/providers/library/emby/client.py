@@ -3,10 +3,11 @@
 import asyncio
 import importlib.metadata
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from urllib.parse import urlencode
 
 import emby_client
+from anibridge.utils.datetime import normalize_local_datetime
 from anibridge.utils.types import ProviderLogger
 from emby_client.models.base_item_dto import BaseItemDto
 from emby_client.models.user_item_data_dto import UserItemDataDto
@@ -165,7 +166,7 @@ class EmbyClient:
         items = await asyncio.to_thread(
             self._fetch_section_items,
             section,
-            min_last_modified=self._normalize_local_datetime(min_last_modified),
+            min_last_modified=normalize_local_datetime(min_last_modified),
             require_watched=require_watched,
             keys=keys,
         )
@@ -277,7 +278,7 @@ class EmbyClient:
             for episode in episodes:
                 if not episode.id:
                     continue
-                last_played = self._normalize_local_datetime(
+                last_played = normalize_local_datetime(
                     episode.user_data.last_played_date if episode.user_data else None
                 )
                 if last_played is None:
@@ -285,7 +286,7 @@ class EmbyClient:
                 history.append((episode.id, last_played))
             return tuple(history)
 
-        last_played = self._normalize_local_datetime(
+        last_played = normalize_local_datetime(
             item.user_data.last_played_date if item.user_data else None
         )
         if last_played is None:
@@ -580,7 +581,7 @@ class EmbyClient:
                 user_data.last_played_date if user_data else None,
             )
             for value in candidate_datetimes:
-                normalized = self._normalize_local_datetime(value)
+                normalized = normalize_local_datetime(value)
                 if normalized is not None and normalized >= min_last_modified:
                     filtered.append(item)
                     break
@@ -667,13 +668,3 @@ class EmbyClient:
         if isinstance(response, list):
             return response
         return []
-
-    @staticmethod
-    def _normalize_local_datetime(value: datetime | None) -> datetime | None:
-        """Return a timezone-aware datetime."""
-        if value is None:
-            return value
-        local_tz = datetime.now().astimezone().tzinfo or UTC
-        if value.tzinfo is None:
-            return value.replace(tzinfo=local_tz)
-        return value.astimezone(local_tz)

@@ -4,20 +4,22 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import emby_client
 import pytest
+from anibridge.utils.types import ProviderLogger
 
 import anibridge.providers.library.emby as library_module
+import anibridge.providers.library.emby.library as library_impl
 from anibridge.providers.library.emby.client import EmbyClient
 
 
-def _test_logger() -> logging.Logger:
+def _test_logger() -> ProviderLogger:
     logger = logging.getLogger("tests.anibridge.emby.client")
     logger.handlers = []
     logger.addHandler(logging.NullHandler())
-    return logger
+    return cast(ProviderLogger, logger)
 
 
 @dataclass(slots=True)
@@ -179,6 +181,25 @@ class RecordingItemsApi:
     def get_users_by_userid_items(self, user_id: str, **kwargs):
         self.calls.append({"user_id": user_id, **kwargs})
         return SimpleNamespace(items=[])
+
+
+class FakeRequest:
+    """Lightweight request stub for webhook parsing tests."""
+
+    def __init__(
+        self,
+        *,
+        payload: dict[str, object] | str,
+        content_type: str = "application/json",
+    ) -> None:
+        self.headers = {"content-type": content_type}
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+    async def form(self):
+        return {"payload": self._payload}
 
 
 @pytest.fixture()
@@ -401,3 +422,199 @@ def test_fetch_section_items_omits_ids_when_no_key_filter():
     assert "is_played" not in all_items_call
     assert "ids" not in all_items_call
     assert "genres" not in all_items_call
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_filters_show_mappings(monkeypatch: pytest.MonkeyPatch):
+    """Strict mode should keep only descriptors matching section metadata fetcher."""
+    show = FakeItem(
+        id="show-1",
+        name="Show One",
+        type="Series",
+        provider_ids={"AniDb": "3333", "AniList": "4444", "Tvdb": "55"},
+        user_data=FakeUserData(playback_position_ticks=123),
+    )
+    section = FakeItem(
+        id="sec-shows",
+        name="Shows",
+        type="CollectionFolder",
+        collection_type="tvshows",
+    )
+    fake_client = FakeEmbyClient(
+        sections=[section],
+        items={"sec-shows": [show], "seasons:show-1": [], "episodes:show-1": []},
+        show_metadata_fetchers_by_section={"sec-shows": "AniDB"},
+    )
+
+    monkeypatch.setattr(
+        library_module.EmbyLibraryProvider,
+        "_create_client",
+        lambda self: fake_client,
+    )
+    provider = library_module.EmbyLibraryProvider(
+        config={
+            "url": "http://emby",
+            "token": "token",
+            "user": "demo",
+            "strict": True,
+        },
+        logger=_test_logger(),
+    )
+    await provider.initialize()
+
+    section_wrapper = (await provider.get_sections())[0]
+    show_item = (await provider.list_items(section_wrapper))[0]
+    assert show_item.mapping_descriptors() == (("anidb", "3333", None),)
+
+
+@pytest.mark.asyncio
+async def test_media_helpers_and_history(
+    library_setup, monkeypatch: pytest.MonkeyPatch
+):
+    """Media URLs, poster behavior, and history conversion should be stable."""
+    provider, _client, movie = library_setup
+    await provider.initialize()
+    movie_section = (await provider.get_sections())[0]
+    movie_item = (await provider.list_items(movie_section))[0]
+
+    monkeypatch.setattr(
+        library_impl,
+        "fetch_image_as_data_url",
+        lambda *_args, **_kwargs: "data:image/png;base64,AA==",
+    )
+
+    assert movie_item.media().external_url.endswith(movie.id)
+    assert movie_item.media().poster_image is not None
+
+    movie.image_tags = None
+    assert movie_item.media().poster_image is None
+
+    movie.image_tags = {"Primary": "tag"}
+    monkeypatch.setattr(
+        library_impl,
+        "fetch_image_as_data_url",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert movie_item.media().poster_image is None
+
+    history = await movie_item.history()
+    assert history and history[0].library_key == movie.id
+
+
+@pytest.mark.asyncio
+async def test_parse_webhook_behaviors(library_setup):
+    """Webhook parsing should support sync events and reject unsupported payloads."""
+    provider, _client, movie = library_setup
+    await provider.initialize()
+
+    should_sync, keys = await provider.parse_webhook(
+        FakeRequest(
+            payload={
+                "NotificationType": "ItemAdded",
+                "ItemType": "Movie",
+                "ItemId": movie.id,
+            }
+        )
+    )
+    assert should_sync is True and keys == (movie.id,)
+
+    should_sync, keys = await provider.parse_webhook(
+        FakeRequest(
+            payload={
+                "NotificationType": "PlaybackStop",
+                "ItemType": "Episode",
+                "ItemId": "episode-1",
+                "SeriesId": "show-1",
+                "UserId": "user-1",
+            }
+        )
+    )
+    assert should_sync is True and keys == ("show-1",)
+
+    should_sync, keys = await provider.parse_webhook(
+        FakeRequest(
+            payload={
+                "NotificationType": "UserDataSaved",
+                "ItemType": "Movie",
+                "ItemId": movie.id,
+                "UserId": "another-user",
+            }
+        )
+    )
+    assert should_sync is False and keys == ()
+
+    should_sync, keys = await provider.parse_webhook(
+        FakeRequest(
+            payload={
+                "NotificationType": "SessionStart",
+                "ItemType": "Movie",
+                "ItemId": movie.id,
+            }
+        )
+    )
+    assert should_sync is False and keys == ()
+
+    with pytest.raises(ValueError):
+        await provider.parse_webhook(FakeRequest(payload={"ItemId": movie.id}))
+    with pytest.raises(ValueError):
+        await provider.parse_webhook(
+            FakeRequest(payload={"NotificationType": "ItemAdded", "ItemType": "Movie"})
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_items_and_wrap_entry_error_paths(library_setup):
+    """Provider should reject non-Emby sections and unsupported media types."""
+    provider, _client, _movie = library_setup
+    await provider.initialize()
+
+    with pytest.raises(TypeError):
+        await provider.list_items(cast(Any, object()))
+
+    section = (await provider.get_sections())[0]
+    with pytest.raises(TypeError):
+        provider._wrap_entry(
+            section,
+            cast(
+                emby_client.models.base_item_dto.BaseItemDto,
+                FakeItem(id="x", name="X", type="Unknown"),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_episode_and_season_parent_resolution_errors(library_setup):
+    """Episode/season wrappers should raise errors when parent ids are missing."""
+    provider, _client, _movie = library_setup
+    await provider.initialize()
+    section = (await provider.get_sections())[1]
+
+    season = library_impl.EmbyLibrarySeason(
+        provider,
+        section,
+        cast(
+            emby_client.models.base_item_dto.BaseItemDto,
+            FakeItem(id="season-x", name="Season", type="Season", series_id=None),
+        ),
+    )
+    with pytest.raises(RuntimeError):
+        season.show()
+
+    episode = library_impl.EmbyLibraryEpisode(
+        provider,
+        section,
+        cast(
+            emby_client.models.base_item_dto.BaseItemDto,
+            FakeItem(
+                id="ep-x",
+                name="Episode",
+                type="Episode",
+                series_id=None,
+                season_id=None,
+            ),
+        ),
+    )
+    with pytest.raises(RuntimeError):
+        episode.show()
+    with pytest.raises(RuntimeError):
+        episode.season()

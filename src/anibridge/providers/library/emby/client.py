@@ -374,7 +374,7 @@ class EmbyClient:
                     if next_series_id is not None:
                         series_ids.add(str(next_series_id))
             except Exception:
-                self.log.exception(
+                self.log.error(
                     "Failed to load continue watching items for section %s", section_id
                 )
                 raise
@@ -414,8 +414,7 @@ class EmbyClient:
             str: The constructed image URL.
         """
         params = {
-            "maxHeight": 400,
-            "maxWidth": 300,
+            "width": 92,
             "quality": 90,
             "api_key": self._token,
         }

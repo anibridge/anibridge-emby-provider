@@ -1,6 +1,6 @@
 [project]
 name = "anibridge-emby-provider"
-version = "0.2.0b2"
+version = "0.2.0b3"
 description = "Emby provider for the AniBridge project."
 readme = "README.md"
 requires-python = ">=3.14"

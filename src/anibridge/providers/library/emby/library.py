@@ -18,6 +18,7 @@ from anibridge.library import (
     MediaKind,
 )
 from anibridge.library.base import MappingDescriptor
+from anibridge.utils.cache import cache, ttl_cache
 from anibridge.utils.image import fetch_image_as_data_url
 from anibridge.utils.types import ProviderLogger
 from emby_client.models.base_item_dto import BaseItemDto
@@ -254,16 +255,32 @@ class EmbyLibraryShow(EmbyLibraryEntry, LibraryShow["EmbyLibraryProvider"]):
         """Initialize the show wrapper."""
         super().__init__(provider, section, item, MediaKind.SHOW)
 
+    @ttl_cache(ttl=30)
     def episodes(self) -> Sequence[EmbyLibraryEpisode]:
         """Return all episodes belonging to the show."""
         if self._item.id is None:
             return ()
+
+        seasons = self.seasons()
+        if seasons and all(
+            season.episodes.cache_info().currsize > 0 for season in seasons
+        ):
+            return tuple(episode for season in seasons for episode in season.episodes())
+
+        seasons_by_id = {season.key: season for season in seasons}
         episodes = self._provider._client.list_show_episodes(show_id=self._item.id)
         return tuple(
-            EmbyLibraryEpisode(self._provider, self._section, episode)
+            EmbyLibraryEpisode(
+                self._provider,
+                self._section,
+                episode,
+                season=seasons_by_id.get(str(episode.season_id or episode.parent_id)),
+                show=self,
+            )
             for episode in episodes
         )
 
+    @ttl_cache(ttl=30)
     def seasons(self) -> Sequence[EmbyLibrarySeason]:
         """Return all seasons belonging to the show."""
         if self._item.id is None:
@@ -291,12 +308,14 @@ class EmbyLibrarySeason(EmbyLibraryEntry, LibrarySeason["EmbyLibraryProvider"]):
         self._show = show
         self.index = int(item.index_number or 0)
 
+    @ttl_cache(ttl=30)
     def episodes(self) -> Sequence[EmbyLibraryEpisode]:
         """Return the episodes belonging to this season."""
-        if self._item.series_id is None or self._item.id is None:
+        show_id = self._item.series_id or self._item.parent_id
+        if show_id is None or self._item.id is None:
             return ()
         episodes = self._provider._client.list_show_episodes(
-            show_id=self._item.series_id,
+            show_id=show_id,
             season_id=self._item.id,
         )
         return tuple(
@@ -306,13 +325,14 @@ class EmbyLibrarySeason(EmbyLibraryEntry, LibrarySeason["EmbyLibraryProvider"]):
             for episode in episodes
         )
 
+    @cache
     def show(self) -> LibraryShow:
         """Return the parent show."""
         if self._show is not None:
             return self._show
-        if self._item.series_id is None:
+        show_id = self._item.series_id or self._item.parent_id
+        if show_id is None:
             raise RuntimeError("Season is missing SeriesId")
-        show_id = self._item.series_id
         raw_show = self._provider._client.get_item(show_id)
         self._show = EmbyLibraryShow(self._provider, self._section, raw_show)
         return self._show
@@ -347,31 +367,37 @@ class EmbyLibraryEpisode(EmbyLibraryEntry, LibraryEpisode["EmbyLibraryProvider"]
         self._season = season
         self._show = show
         self.index = int(item.index_number or 0)
-        self.season_index = int(item.parent_index_number or 0)
+        parent_index_number = item.parent_index_number
+        if parent_index_number is None and season is not None:
+            parent_index_number = season.index
+        self.season_index = int(parent_index_number or 0)
 
+    @cache
     def season(self) -> LibrarySeason:
         """Return the parent season."""
         if self._season is not None:
             return self._season
-        if self._item.season_id is None:
+        season_id = self._item.season_id or self._item.parent_id
+        if season_id is None:
             raise RuntimeError("Episode is missing SeasonId")
-        season_id = self._item.season_id
         raw_season = self._provider._client.get_item(season_id)
         self._season = EmbyLibrarySeason(
             self._provider,
             self._section,
             raw_season,
-            show=cast(EmbyLibraryShow, self.show()),
+            show=self._show,
         )
         return self._season
 
+    @cache
     def show(self) -> LibraryShow:
         """Return the parent show."""
         if self._show is not None:
             return self._show
-        if self._item.series_id is None:
-            raise RuntimeError("Episode is missing SeriesId")
         show_id = self._item.series_id
+        if show_id is None:
+            self._show = cast(EmbyLibraryShow, self.season().show())
+            return self._show
         raw_show = self._provider._client.get_item(show_id)
         self._show = EmbyLibraryShow(self._provider, self._section, raw_show)
         return self._show

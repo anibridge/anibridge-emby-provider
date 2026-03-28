@@ -104,7 +104,7 @@ class EmbyClient:
         self._user_name = None
         self._sections.clear()
         self._show_metadata_fetcher_by_section_id.clear()
-        self._continue_cache.clear()
+        self.clear_cache()
 
     def user_id(self) -> str:
         """Get the Emby user id for the session.
@@ -439,7 +439,6 @@ class EmbyClient:
     def clear_cache(self) -> None:
         """Clear cached metadata."""
         self._continue_cache.clear()
-        return None
 
     def _configure_client(self) -> None:
         """Set up the Emby API client and service instances."""

@@ -85,7 +85,8 @@ def test_runtime_guards_before_initialize(emby_client_instance: EmbyClient) -> N
         client.get_item("item")
     with pytest.raises(RuntimeError):
         client.is_on_continue_watching(
-            cast(Any, SimpleNamespace(type="Series", id="x", series_id=None))
+            cast(Any, SimpleNamespace(id="sec-1")),
+            cast(Any, SimpleNamespace(type="Series", id="x", series_id=None)),
         )
 
 
@@ -167,31 +168,214 @@ async def test_fetch_history_for_series_and_movie(
 
 
 def test_is_on_continue_watching_variants(emby_client_instance: EmbyClient) -> None:
-    """Continue-watching should handle type mapping and API errors."""
+    """Continue-watching should handle type mapping, caching, and API errors."""
     client = emby_client_instance
     client._user_id = "user-1"
 
     class _FakeTvShowsApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
         def get_shows_nextup(self, user_id: str, **kwargs: Any):
-            if kwargs.get("series_id") == "bad":
+            self.calls += 1
+            if self.calls == 2:
                 raise TypeError("bad")
-            if kwargs.get("series_id") == "empty":
+            if self.calls == 3:
                 return SimpleNamespace(items=[])
-            return SimpleNamespace(items=[SimpleNamespace(id="ep")])
+            return SimpleNamespace(items=[SimpleNamespace(id="ep", series_id="show-1")])
 
-    client._tv_shows_api = cast(Any, _FakeTvShowsApi())
+    tv_api = _FakeTvShowsApi()
+    client._tv_shows_api = cast(Any, tv_api)
+    section = SimpleNamespace(id="sec-1")
 
-    series = SimpleNamespace(type="Series", id="show-1", series_id=None)
-    season = SimpleNamespace(type="Season", id="season-1", series_id="show-1")
-    episode = SimpleNamespace(type="Episode", id="ep-1", series_id="show-1")
-    bad = SimpleNamespace(type="Series", id="bad", series_id=None)
-    empty = SimpleNamespace(type="Series", id="empty", series_id=None)
+    series = SimpleNamespace(
+        type="Series",
+        id="show-1",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    season = SimpleNamespace(
+        type="Season",
+        id="season-1",
+        series_id="show-1",
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    episode = SimpleNamespace(
+        type="Episode",
+        id="ep-1",
+        series_id="show-1",
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    bad = SimpleNamespace(
+        type="Series",
+        id="bad",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    empty = SimpleNamespace(
+        type="Series",
+        id="empty",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
 
-    assert client.is_on_continue_watching(cast(Any, series)) is True
-    assert client.is_on_continue_watching(cast(Any, season)) is True
-    assert client.is_on_continue_watching(cast(Any, episode)) is True
-    assert client.is_on_continue_watching(cast(Any, empty)) is False
-    assert client.is_on_continue_watching(cast(Any, bad)) is False
+    assert client.is_on_continue_watching(cast(Any, section), cast(Any, series)) is True
+    assert client.is_on_continue_watching(cast(Any, section), cast(Any, series)) is True
+    assert client.is_on_continue_watching(cast(Any, section), cast(Any, season)) is True
+    assert (
+        client.is_on_continue_watching(cast(Any, section), cast(Any, episode)) is True
+    )
+    assert client.is_on_continue_watching(cast(Any, section), cast(Any, empty)) is False
+    assert client.is_on_continue_watching(cast(Any, section), cast(Any, bad)) is False
+    assert tv_api.calls == 1
+
+
+def test_is_on_continue_watching_uses_stale_deck_on_refresh_failure(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Refresh failures should reuse stale cached Next Up deck when available."""
+    client = emby_client_instance
+    client._user_id = "user-1"
+
+    class _FakeTvShowsApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_shows_nextup(self, user_id: str, **kwargs: Any):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    items=[SimpleNamespace(id="ep", series_id="show-stale")]
+                )
+            raise TypeError("bad")
+
+    tv_api = _FakeTvShowsApi()
+    client._tv_shows_api = cast(Any, tv_api)
+    section = SimpleNamespace(id="sec-1")
+
+    initial_item = SimpleNamespace(
+        type="Series",
+        id="show-stale",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    assert (
+        client.is_on_continue_watching(cast(Any, section), cast(Any, initial_item))
+        is True
+    )
+
+    refresh_item = SimpleNamespace(
+        type="Series",
+        id="show-stale",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(
+            last_played_date=datetime.now(UTC) + timedelta(days=1)
+        ),
+    )
+    with pytest.raises(TypeError, match="bad"):
+        client.is_on_continue_watching(cast(Any, section), cast(Any, refresh_item))
+    assert tv_api.calls == 2
+
+
+def test_is_on_continue_watching_cache_is_section_scoped(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Cache should be keyed per section and not shared across sections."""
+    client = emby_client_instance
+    client._user_id = "user-1"
+
+    class _FakeTvShowsApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_shows_nextup(self, user_id: str, **kwargs: Any):
+            self.calls += 1
+            parent_id = kwargs.get("parent_id")
+            if parent_id == "sec-1":
+                return SimpleNamespace(
+                    items=[SimpleNamespace(id="ep", series_id="show-1")]
+                )
+            return SimpleNamespace(items=[SimpleNamespace(id="ep", series_id="show-2")])
+
+    tv_api = _FakeTvShowsApi()
+    client._tv_shows_api = cast(Any, tv_api)
+
+    section_one = SimpleNamespace(id="sec-1")
+    section_two = SimpleNamespace(id="sec-2")
+    show_one = SimpleNamespace(
+        type="Series",
+        id="show-1",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    show_two = SimpleNamespace(
+        type="Series",
+        id="show-2",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+
+    assert client.is_on_continue_watching(cast(Any, section_one), cast(Any, show_one))
+    assert client.is_on_continue_watching(cast(Any, section_two), cast(Any, show_two))
+    assert tv_api.calls == 2
+
+
+def test_is_on_continue_watching_refreshes_when_item_activity_is_newer(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Cache entries should refresh if item activity is newer than cache time."""
+    client = emby_client_instance
+    client._user_id = "user-1"
+
+    class _FakeTvShowsApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_shows_nextup(self, user_id: str, **kwargs: Any):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(items=[])
+            return SimpleNamespace(items=[SimpleNamespace(id="ep", series_id="show-2")])
+
+    tv_api = _FakeTvShowsApi()
+    client._tv_shows_api = cast(Any, tv_api)
+    section = SimpleNamespace(id="sec-1")
+
+    first_item = SimpleNamespace(
+        type="Series",
+        id="show-2",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    assert (
+        client.is_on_continue_watching(cast(Any, section), cast(Any, first_item))
+        is False
+    )
+
+    refreshed_item = SimpleNamespace(
+        type="Series",
+        id="show-2",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(
+            last_played_date=datetime.now(UTC) + timedelta(days=1)
+        ),
+    )
+    assert (
+        client.is_on_continue_watching(cast(Any, section), cast(Any, refreshed_item))
+        is True
+    )
+    assert tv_api.calls == 2
 
 
 def test_watchlist_and_helper_utilities(emby_client_instance: EmbyClient) -> None:

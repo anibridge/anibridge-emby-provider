@@ -3,7 +3,9 @@
 import asyncio
 import importlib.metadata
 from collections.abc import Sequence
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import cast
 from urllib.parse import urlencode
 
 import emby_client
@@ -13,6 +15,14 @@ from emby_client.models.base_item_dto import BaseItemDto
 from emby_client.models.user_item_data_dto import UserItemDataDto
 
 __all__ = ["EmbyClient"]
+
+
+@dataclass(frozen=True, slots=True)
+class _FrozenCacheEntry:
+    """Immutable Next Up deck cache entry with a creation timestamp."""
+
+    keys: frozenset[str]
+    cached_at: datetime
 
 
 class EmbyClient:
@@ -67,6 +77,7 @@ class EmbyClient:
         self._base_url = url.rstrip("/")
         self._sections: list[BaseItemDto] = []
         self._show_metadata_fetcher_by_section_id: dict[str, str] = {}
+        self._continue_cache: dict[str, _FrozenCacheEntry] = {}
 
     async def initialize(self) -> None:
         """Authenticate and populate server metadata."""
@@ -93,6 +104,7 @@ class EmbyClient:
         self._user_name = None
         self._sections.clear()
         self._show_metadata_fetcher_by_section_id.clear()
+        self._continue_cache.clear()
 
     def user_id(self) -> str:
         """Get the Emby user id for the session.
@@ -293,10 +305,11 @@ class EmbyClient:
             return ()
         return ((item.id, last_played),)
 
-    def is_on_continue_watching(self, item: BaseItemDto) -> bool:
+    def is_on_continue_watching(self, section: BaseItemDto, item: BaseItemDto) -> bool:
         """Determine whether the item appears in Emby's Next Up deck.
 
         Args:
+            section (BaseItemDto): The Emby section containing the item.
             item (BaseItemDto): The Emby item to check.
 
         Returns:
@@ -304,6 +317,8 @@ class EmbyClient:
         """
         if self._tv_shows_api is None or self._user_id is None:
             raise RuntimeError("Emby client has not been initialized")
+        if section.id is None or (item.type or "").lower() == "movie":
+            return False
 
         series_id: str | None = None
         item_type = (item.type or "").lower()
@@ -315,16 +330,63 @@ class EmbyClient:
         if not series_id:
             return False
 
-        try:
-            response = self._tv_shows_api.get_shows_nextup(
-                self._user_id,
-                series_id=series_id,
-                limit=1,
-                enable_user_data=False,
+        section_id = str(section.id)
+        cache_entry = self._continue_cache.get(section_id)
+        # Refresh section cache when the inspected item changed after cache creation.
+        should_refresh = cache_entry is None
+        if cache_entry is not None:
+            user_data = cast(UserItemDataDto | None, item.user_data)
+            timestamps = [
+                timestamp
+                for timestamp in (
+                    item.date_created,
+                    user_data.last_played_date if user_data else None,
+                )
+                if timestamp is not None
+            ]
+
+            if timestamps:
+                item_updated_at = normalize_local_datetime(max(timestamps))
+                if (
+                    item_updated_at is not None
+                    and item_updated_at > cache_entry.cached_at
+                ):
+                    should_refresh = True
+
+        if should_refresh:
+            # Load continue watching items for this section
+            if self._tv_shows_api is None or self._user_id is None:
+                raise RuntimeError("Emby client has not been initialized")
+
+            series_ids: set[str] = set()
+            try:
+                next_up_response = self._tv_shows_api.get_shows_nextup(
+                    self._user_id,
+                    limit=1000,
+                    enable_user_data=False,
+                    parent_id=section_id,
+                )
+                items = self._extract_items(next_up_response)
+                for next_up_item in items:
+                    next_series_id = getattr(next_up_item, "series_id", None)
+                    if next_series_id is None:
+                        next_series_id = getattr(next_up_item, "id", None)
+                    if next_series_id is not None:
+                        series_ids.add(str(next_series_id))
+            except Exception:
+                self.log.exception(
+                    "Failed to load continue watching items for section %s", section_id
+                )
+                raise
+
+            cache_entry = _FrozenCacheEntry(
+                keys=frozenset(series_ids),
+                cached_at=datetime.now(tz=UTC),
             )
-            return bool(self._extract_items(response))
-        except TypeError, ValueError:
-            return False
+            self._continue_cache[section_id] = cache_entry
+
+        assert cache_entry is not None
+        return series_id in cache_entry.keys
 
     def is_on_watchlist(self, item: BaseItemDto) -> bool:
         """Determine whether the item is on the user's favorites list.
@@ -376,7 +438,8 @@ class EmbyClient:
         return f"{self._base_url}/web/index.html#!/item?{params}"
 
     def clear_cache(self) -> None:
-        """Clear cached metadata (no-op)."""
+        """Clear cached metadata."""
+        self._continue_cache.clear()
         return None
 
     def _configure_client(self) -> None:

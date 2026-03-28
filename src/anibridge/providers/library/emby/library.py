@@ -171,7 +171,10 @@ class EmbyLibraryEntry(LibraryEntry["EmbyLibraryProvider"]):
     @property
     def on_watching(self) -> bool:
         """Check if the media item is on the user's current watching list."""
-        return self._provider.is_on_continue_watching(self._item)
+        return self._provider.is_on_continue_watching(
+            self._section._section,
+            self._item,
+        )
 
     @property
     def on_watchlist(self) -> bool:
@@ -530,9 +533,9 @@ class EmbyLibraryProvider(LibraryProvider):
         """Reset any cached Emby responses maintained by the provider."""
         self._client.clear_cache()
 
-    def is_on_continue_watching(self, item: BaseItemDto) -> bool:
+    def is_on_continue_watching(self, section: BaseItemDto, item: BaseItemDto) -> bool:
         """Determine whether the given item appears in Continue Watching."""
-        return self._client.is_on_continue_watching(item)
+        return self._client.is_on_continue_watching(section, item)
 
     def is_on_watchlist(self, item: BaseItemDto) -> bool:
         """Determine whether the given item appears in the user's favorites list."""

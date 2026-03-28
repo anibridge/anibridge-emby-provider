@@ -131,7 +131,7 @@ class FakeEmbyClient:
             history = [_history_tuple(item)]
         return tuple(entry for entry in history if entry is not None)
 
-    def is_on_continue_watching(self, item: FakeItem) -> bool:
+    def is_on_continue_watching(self, section: FakeItem, item: FakeItem) -> bool:
         user_data = item.user_data
         return bool(
             user_data and not user_data.played and user_data.playback_position_ticks

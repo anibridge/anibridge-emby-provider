@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from anibridge.library import (
     HistoryEntry,
@@ -255,32 +255,14 @@ class EmbyLibraryShow(EmbyLibraryEntry, LibraryShow["EmbyLibraryProvider"]):
         """Initialize the show wrapper."""
         super().__init__(provider, section, item, MediaKind.SHOW)
 
-    @ttl_cache(ttl=30)
     def episodes(self) -> Sequence[EmbyLibraryEpisode]:
         """Return all episodes belonging to the show."""
         if self._item.id is None:
             return ()
-
         seasons = self.seasons()
-        if seasons and all(
-            season.episodes.cache_info().currsize > 0 for season in seasons
-        ):
-            return tuple(episode for season in seasons for episode in season.episodes())
+        return tuple(episode for season in seasons for episode in season.episodes())
 
-        seasons_by_id = {season.key: season for season in seasons}
-        episodes = self._provider._client.list_show_episodes(show_id=self._item.id)
-        return tuple(
-            EmbyLibraryEpisode(
-                self._provider,
-                self._section,
-                episode,
-                season=seasons_by_id.get(str(episode.season_id or episode.parent_id)),
-                show=self,
-            )
-            for episode in episodes
-        )
-
-    @ttl_cache(ttl=30)
+    @ttl_cache(ttl=15)
     def seasons(self) -> Sequence[EmbyLibrarySeason]:
         """Return all seasons belonging to the show."""
         if self._item.id is None:
@@ -308,7 +290,7 @@ class EmbyLibrarySeason(EmbyLibraryEntry, LibrarySeason["EmbyLibraryProvider"]):
         self._show = show
         self.index = int(item.index_number or 0)
 
-    @ttl_cache(ttl=30)
+    @ttl_cache(ttl=15)
     def episodes(self) -> Sequence[EmbyLibraryEpisode]:
         """Return the episodes belonging to this season."""
         show_id = self._item.series_id or self._item.parent_id
@@ -326,7 +308,7 @@ class EmbyLibrarySeason(EmbyLibraryEntry, LibrarySeason["EmbyLibraryProvider"]):
         )
 
     @cache
-    def show(self) -> LibraryShow:
+    def show(self) -> EmbyLibraryShow:
         """Return the parent show."""
         if self._show is not None:
             return self._show
@@ -373,7 +355,7 @@ class EmbyLibraryEpisode(EmbyLibraryEntry, LibraryEpisode["EmbyLibraryProvider"]
         self.season_index = int(parent_index_number or 0)
 
     @cache
-    def season(self) -> LibrarySeason:
+    def season(self) -> EmbyLibrarySeason:
         """Return the parent season."""
         if self._season is not None:
             return self._season
@@ -390,13 +372,13 @@ class EmbyLibraryEpisode(EmbyLibraryEntry, LibraryEpisode["EmbyLibraryProvider"]
         return self._season
 
     @cache
-    def show(self) -> LibraryShow:
+    def show(self) -> EmbyLibraryShow:
         """Return the parent show."""
         if self._show is not None:
             return self._show
         show_id = self._item.series_id
         if show_id is None:
-            self._show = cast(EmbyLibraryShow, self.season().show())
+            self._show = self.season().show()
             return self._show
         raw_show = self._provider._client.get_item(show_id)
         self._show = EmbyLibraryShow(self._provider, self._section, raw_show)
@@ -445,7 +427,6 @@ class EmbyLibraryProvider(LibraryProvider):
                 if provider := _STRICT_FETCHER_TO_PROVIDER.get(metadata_fetcher):
                     self._strict_show_provider_by_section[section.key] = provider
 
-        await self.clear_cache()
         self.log.debug(
             "Emby provider initialized for user id=%s with %s sections",
             self._user.key,
@@ -556,6 +537,12 @@ class EmbyLibraryProvider(LibraryProvider):
     async def clear_cache(self) -> None:
         """Reset any cached Emby responses maintained by the provider."""
         self._client.clear_cache()
+        # Note this clears the class level caches, which will be a no-op since the
+        # caches used here are instance level. However, I'm leaving this in place
+        # in case anibridge-utils caches support instance level cache clearing from
+        # the class call in the future.
+        EmbyLibraryShow.seasons.cache_clear()
+        EmbyLibrarySeason.episodes.cache_clear()
 
     def is_on_continue_watching(self, section: BaseItemDto, item: BaseItemDto) -> bool:
         """Determine whether the given item appears in Continue Watching."""
@@ -586,7 +573,7 @@ class EmbyLibraryProvider(LibraryProvider):
 
     def _wrap_entry(
         self, section: EmbyLibrarySection, item: BaseItemDto
-    ) -> LibraryEntry:
+    ) -> EmbyLibraryEntry:
         """Wrap an Emby item in the appropriate library entry class."""
         item_type = (item.type or "").lower()
         if item_type == "episode":

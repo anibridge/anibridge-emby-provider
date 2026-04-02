@@ -22,8 +22,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "anibridge-library-base>=0.2.0b6",
-    "anibridge-utils>=0.2.0b5",
+    "anibridge-library-base>=0.2.0",
+    "anibridge-utils>=0.2.0",
     "embyclient>=4.9.0.33",
     "pydantic>=2.12.5",
     "requests>=2.32.0",

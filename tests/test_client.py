@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 
-from anibridge.providers.library.emby.client import EmbyClient
+from anibridge.providers.library.emby.client import EmbyClient, _FrozenCacheEntry
 
 
 def _test_logger():
@@ -376,6 +376,42 @@ def test_is_on_continue_watching_refreshes_when_item_activity_is_newer(
         is True
     )
     assert tv_api.calls == 2
+
+
+def test_is_on_continue_watching_refreshes_when_cache_ttl_expires(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Expired cache entries should refresh even without newer item timestamps."""
+    client = emby_client_instance
+    client._user_id = "user-1"
+
+    class _FakeTvShowsApi:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_shows_nextup(self, user_id: str, **kwargs: Any):
+            self.calls += 1
+            return SimpleNamespace(items=[SimpleNamespace(id="ep", series_id="show-2")])
+
+    tv_api = _FakeTvShowsApi()
+    client._tv_shows_api = cast(Any, tv_api)
+
+    section = SimpleNamespace(id="sec-1")
+    client._continue_cache[str(section.id)] = _FrozenCacheEntry(
+        keys=frozenset({"show-1"}),
+        cached_at=datetime.now(UTC) - client._CONTINUE_CACHE_TTL - timedelta(seconds=1),
+    )
+
+    item = SimpleNamespace(
+        type="Series",
+        id="show-2",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+
+    assert client.is_on_continue_watching(cast(Any, section), cast(Any, item)) is True
+    assert tv_api.calls == 1
 
 
 def test_watchlist_and_helper_utilities(emby_client_instance: EmbyClient) -> None:

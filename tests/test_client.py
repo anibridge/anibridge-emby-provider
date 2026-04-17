@@ -565,6 +565,44 @@ def test_load_show_metadata_fetchers_and_item_filters(
     assert [item.id for item in items] == ["show-1"]
 
 
+def test_fetch_section_items_uses_native_user_timestamp_for_polled_tv_items(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Poll filtering should use Emby's user timestamp query support."""
+    client = emby_client_instance
+    client._user_id = "u-1"
+
+    now = datetime.now(UTC)
+    section = SimpleNamespace(id="sec-shows", collection_type="tvshows")
+    watched_episode = SimpleNamespace(
+        id="ep-1",
+        type="Episode",
+        series_id="show-1",
+        parent_id=None,
+        user_data=SimpleNamespace(played=True, play_count=0, last_played_date=None),
+        date_created=now - timedelta(days=30),
+    )
+    show = SimpleNamespace(
+        id="show-1",
+        type="Series",
+        user_data=None,
+        date_created=now - timedelta(days=30),
+    )
+    client._items_api = cast(Any, _FakeItemsApi(responses=[[watched_episode], [show]]))
+
+    items = client._fetch_section_items(
+        cast(Any, section),
+        require_watched=True,
+        min_last_modified=now - timedelta(hours=1),
+    )
+
+    assert [item.id for item in items] == ["show-1"]
+    assert (
+        client._items_api.calls[0]["min_date_last_saved_for_user"]
+        == (now - timedelta(hours=1)).isoformat()
+    )
+
+
 def test_filter_items_by_last_modified(emby_client_instance: EmbyClient) -> None:
     """Last modified filtering should consider created and user-played timestamps."""
     now = datetime.now(UTC)

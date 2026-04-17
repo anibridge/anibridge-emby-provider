@@ -175,12 +175,13 @@ def _history_tuple(item: FakeItem):
 class RecordingItemsApi:
     """Record Emby item query kwargs for regression assertions."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, response_items: list[object] | None = None) -> None:
         self.calls: list[dict[str, object]] = []
+        self._response_items = response_items or []
 
     def get_users_by_userid_items(self, user_id: str, **kwargs):
         self.calls.append({"user_id": user_id, **kwargs})
-        return SimpleNamespace(items=[])
+        return SimpleNamespace(items=self._response_items)
 
 
 class FakeRequest:
@@ -280,7 +281,11 @@ def library_setup(monkeypatch: pytest.MonkeyPatch):
         season_id="season-1",
         index_number=1,
         parent_index_number=1,
-        user_data=FakeUserData(last_played_date="2025-01-11T12:00:00Z"),
+        user_data=FakeUserData(
+            played=True,
+            play_count=0,
+            last_played_date="2025-01-11T12:00:00Z",
+        ),
     )
 
     sections = [
@@ -407,6 +412,7 @@ async def test_season_and_episode_mapping_scopes(library_setup):
     assert len(episodes) == 1
     episode = episodes[0]
     assert episode.mapping_descriptors() == descriptors
+    assert episode.view_count == 1
 
 
 def test_fetch_section_items_omits_ids_when_no_key_filter():
@@ -448,6 +454,40 @@ def test_fetch_section_items_omits_ids_when_no_key_filter():
     assert "is_played" not in all_items_call
     assert "ids" not in all_items_call
     assert "genres" not in all_items_call
+
+
+@pytest.mark.asyncio
+async def test_list_section_items_passes_key_filters_as_ids() -> None:
+    """Section item key filters should be forwarded as Emby SDK ids."""
+    client = EmbyClient(
+        logger=_test_logger(),
+        url="http://emby",
+        token="token",
+        user="demo",
+    )
+    show = cast(
+        emby_client.models.base_item_dto.BaseItemDto,
+        FakeItem(id="show-1", name="Show One", type="Series"),
+    )
+    section = cast(
+        emby_client.models.base_item_dto.BaseItemDto,
+        FakeItem(
+            id="sec-shows",
+            name="Shows",
+            type="CollectionFolder",
+            collection_type="tvshows",
+        ),
+    )
+    items_api = RecordingItemsApi(response_items=[show])
+    client._items_api = cast(emby_client.ItemsServiceApi, items_api)
+    client._user_id = "user-1"
+
+    items = await client.list_section_items(section, keys=("show-1",))
+
+    assert [item.id for item in items] == ["show-1"]
+    assert len(items_api.calls) == 1
+    assert items_api.calls[0]["parent_id"] == section.id
+    assert items_api.calls[0]["ids"] == "show-1"
 
 
 @pytest.mark.asyncio

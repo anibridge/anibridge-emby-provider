@@ -512,11 +512,11 @@ class EmbyClient:
         if self._user_id is None or self._items_api is None:
             raise RuntimeError("Emby client has not been initialized")
 
-        include_types = (
-            "Movie" if (section.collection_type or "").lower() == "movies" else "Series"
-        )
+        is_movies = (section.collection_type or "").lower() == "movies"
+        include_types = "Movie" if is_movies else "Series"
         genres = "|".join(self._genre_filter) if self._genre_filter else None
         ids_filter: list[str] | None = self._parse_id_keys(keys)
+        items_api = self._items_api
 
         def _get_items(
             *,
@@ -524,102 +524,107 @@ class EmbyClient:
             parent_id: str | None = None,
             ids: list[str] | None = None,
             is_played: bool | None = None,
+            min_date_last_saved_for_user: datetime | None = None,
             enable_user_data: bool = False,
             enable_images: bool = False,
+            limit: int | None = None,
         ) -> list[BaseItemDto]:
-            if self._items_api is None:
-                raise RuntimeError("Emby client has not been initialized")
-
-            params = {
-                "parent_id": parent_id,
+            params: dict[str, object] = {
                 "include_item_types": include_item_types,
                 "recursive": True,
                 "fields": ",".join(self.ITEM_FIELDS),
-                "enable_user_data": enable_user_data,
-                "enable_images": enable_images,
-                "is_played": is_played,
-                "genres": genres,
             }
+            for k, v in (
+                ("parent_id", parent_id),
+                ("is_played", is_played),
+                (
+                    "min_date_last_saved_for_user",
+                    min_date_last_saved_for_user.isoformat()
+                    if min_date_last_saved_for_user is not None
+                    else None,
+                ),
+                ("enable_user_data", enable_user_data or None),
+                ("enable_images", enable_images or None),
+                ("genres", genres),
+                ("limit", limit),
+            ):
+                if v is not None:
+                    params[k] = v
             if ids is not None:
                 params["ids"] = ",".join(ids)
-            params = {key: value for key, value in params.items() if value is not None}
-
-            response = self._items_api.get_users_by_userid_items(
-                self._user_id,
-                **params,
+            return self._extract_items(
+                items_api.get_users_by_userid_items(self._user_id, **params)
             )
-            return self._extract_items(response)
 
-        if not require_watched:
-            items = _get_items(
-                include_item_types=include_types,
-                parent_id=section.id,
-                enable_user_data=True,
-                enable_images=True,
-                ids=ids_filter,
+        # Movies can be filtered directly with the "IsPlayed" param
+        if not require_watched or is_movies:
+            return self._filter_items_by_last_modified(
+                _get_items(
+                    include_item_types=include_types,
+                    parent_id=section.id,
+                    enable_user_data=True,
+                    enable_images=True,
+                    ids=ids_filter,
+                    is_played=True if require_watched else None,
+                ),
+                min_last_modified,
             )
-            return self._filter_items_by_last_modified(items, min_last_modified)
 
-        if (section.collection_type or "").lower() == "movies":
-            items = _get_items(
-                include_item_types="Movie",
+        # For shows, we need to check the activity of individual episodes since
+        # show level user data isn't always updated reliably.
+        if ids_filter is not None:
+            raw = _get_items(include_item_types="Series,Season,Episode", ids=ids_filter)
+            series_to_check: set[str] = set()
+            for item in raw:
+                sid = (
+                    item.id
+                    if (item.type or "").lower() == "series"
+                    else (item.series_id or item.parent_id)
+                )
+                if sid:
+                    series_to_check.add(sid)
+            confirmed = [
+                sid
+                for sid in series_to_check
+                if self._filter_items_by_last_modified(
+                    _get_items(
+                        include_item_types="Episode",
+                        parent_id=sid,
+                        is_played=True,
+                        limit=1,
+                    ),
+                    min_last_modified,
+                )
+            ]
+        else:
+            watched = _get_items(
+                include_item_types="Episode",
                 parent_id=section.id,
                 is_played=True,
-                enable_user_data=True,
-                enable_images=True,
-                ids=ids_filter,
+                min_date_last_saved_for_user=min_last_modified,
             )
-            return self._filter_items_by_last_modified(items, min_last_modified)
+            series_ids = {ep.series_id for ep in watched if ep.series_id}
+            season_ids = {
+                ep.parent_id for ep in watched if ep.parent_id and not ep.series_id
+            }
+            if season_ids:
+                series_ids |= {
+                    s.parent_id
+                    for s in _get_items(
+                        include_item_types="Season", ids=list(season_ids)
+                    )
+                    if s.parent_id
+                }
+            confirmed = list(series_ids)
 
-        watched_items = _get_items(
-            include_item_types="Episode",
-            parent_id=section.id,
-            is_played=True,
-            enable_user_data=True,
-            ids=ids_filter,
-        )
-        watched_items = self._filter_items_by_last_modified(
-            watched_items, min_last_modified
-        )
-        if not watched_items:
+        if not confirmed:
             return []
-
-        series_ids: set[str] = set()
-        unresolved_parent_ids: set[str] = set()
-        for watched_item in watched_items:
-            if watched_item.series_id:
-                series_ids.add(watched_item.series_id)
-            elif watched_item.parent_id:
-                unresolved_parent_ids.add(watched_item.parent_id)
-
-        if not series_ids and not unresolved_parent_ids:
-            return []
-
-        initial_series_ids = list(series_ids | unresolved_parent_ids)
-        items = _get_items(
+        return _get_items(
             include_item_types=include_types,
-            ids=initial_series_ids,
+            ids=confirmed,
             enable_user_data=True,
             enable_images=True,
         )
-        if items or not unresolved_parent_ids:
-            return items
-
-        seasons = _get_items(
-            include_item_types="Season",
-            ids=list(unresolved_parent_ids),
-        )
-        season_series_ids = [item.parent_id for item in seasons if item.parent_id]
-        if not season_series_ids:
-            return []
-
-        items = _get_items(
-            include_item_types=include_types,
-            ids=season_series_ids,
-            enable_user_data=True,
-            enable_images=True,
-        )
-        return items
 
     def _filter_items_by_last_modified(
         self, items: Sequence[BaseItemDto], min_last_modified: datetime | None

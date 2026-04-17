@@ -195,11 +195,9 @@ class EmbyLibraryEntry(LibraryEntry["EmbyLibraryProvider"]):
     def view_count(self) -> int:
         """Return the number of times this media item has been viewed."""
         user_data = self._item.user_data
-        if user_data is None:
+        if user_data is None or not user_data.played:
             return 0
-        if user_data.play_count is None:
-            return 0
-        return int(user_data.play_count)
+        return user_data.play_count or 1
 
     async def history(self) -> Sequence[HistoryEntry]:
         """Fetch the viewing history for this media item."""

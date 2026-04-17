@@ -1,112 +1,168 @@
-"""Emby webhook payload parsing helpers."""
+"""Emby webhook implementation."""
 
-import json
-from collections.abc import Mapping
 from enum import StrEnum
-from functools import cached_property
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from starlette.requests import Request
+from pydantic import BaseModel, ConfigDict, Field
+from starlette.requests import Request
 
 
-class EmbyWebhookNotificationType(StrEnum):
-    """Notification types relevant for library sync."""
+class EmbyWebhookServer(BaseModel):
+    """Minimal Emby server payload."""
 
-    ITEM_ADDED = "ItemAdded"
-    PLAYBACK_STOP = "PlaybackStop"
-    USER_DATA_SAVED = "UserDataSaved"
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(..., alias="Id")
 
 
-class EmbyWebhook:
-    """Represents an Emby webhook event payload."""
+class EmbyWebhookUser(BaseModel):
+    """Minimal Emby user payload."""
 
-    def __init__(self, data: Mapping[str, object]) -> None:
-        """Initialize the webhook wrapper."""
-        self._data = {str(key).lower(): value for key, value in data.items()}
+    model_config = ConfigDict(extra="ignore")
 
-    @cached_property
-    def notification_type(self) -> str | None:
-        """Return the webhook notification type, if present."""
-        value = self._string_value("notificationtype")
-        return value if value else None
+    id: str | None = Field(None, alias="Id")
 
-    @cached_property
-    def user_id(self) -> str | None:
-        """Return the webhook user id, if present."""
-        value = self._string_value("userid")
-        return value if value else None
 
-    @cached_property
-    def username(self) -> str | None:
-        """Return the webhook username, if present."""
-        return self._string_value("notificationusername") or self._string_value(
-            "username"
-        )
+class EmbyWebhookItem(BaseModel):
+    """Subset of Emby item fields used by AniBridge webhook logic."""
 
-    @cached_property
-    def item_type(self) -> str | None:
-        """Return the Emby item type, if present."""
-        return self._string_value("itemtype")
+    model_config = ConfigDict(extra="ignore")
 
-    @cached_property
-    def item_id(self) -> str | None:
-        """Return the webhook item id, if present."""
-        value = self._string_value("itemid")
-        return value if value else None
+    id: str | None = Field(None, alias="Id")
+    type: str | None = Field(None, alias="Type")
+    series_id: str | None = Field(None, alias="SeriesId")
+    parent_id: str | None = Field(None, alias="ParentId")
 
-    @cached_property
-    def series_id(self) -> str | None:
-        """Return the webhook series id, if present."""
-        value = self._string_value("seriesid")
-        return value if value else None
 
-    @cached_property
+class EmbyWebhookPayload(BaseModel):
+    """Emby Webhook."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    event: str = Field(..., alias="Event")
+    server: EmbyWebhookServer = Field(..., alias="Server")
+    item: EmbyWebhookItem | None = Field(None, alias="Item")
+    user: EmbyWebhookUser | None = Field(None, alias="User")
+
+
+class EmbyWebhookEventType(StrEnum):
+    """Enumeration of normalized Emby webhook event types."""
+
+    ITEM_MARK_FAVORITE = "item.markfavorite"
+    ITEM_MARK_PLAYED = "item.markplayed"
+    ITEM_MARK_UNFAVORITE = "item.markunfavorite"
+    ITEM_MARK_UNPLAYED = "item.markunplayed"
+    ITEM_RATE = "item.rate"
+    LIBRARY_DELETED = "library.deleted"
+    LIBRARY_NEW = "library.new"
+    PLAYBACK_PAUSE = "playback.pause"
+    PLAYBACK_START = "playback.start"
+    PLAYBACK_STOP = "playback.stop"
+    PLAYBACK_UNPAUSE = "playback.unpause"
+    PLUGIN_INSTALLED = "plugins.plugininstalled"
+    SCHEDULED_TASK_COMPLETED = "scheduledtasks.completed"
+    SYSTEM_NOTIFICATION_TEST = "system.notificationtest"
+    SYSTEM_SERVER_RESTART_REQUIRED = "system.serverrestartrequired"
+    SYSTEM_SERVER_STARTUP = "system.serverstartup"
+    USER_AUTHENTICATED = "user.authenticated"
+    USER_AUTHENTICATION_FAILED = "user.authenticationfailed"
+    USER_DELETED = "user.deleted"
+    USER_PASSWORD_CHANGED = "user.passwordchanged"
+    USER_POLICY_UPDATED = "user.policyupdated"
+
+
+class EmbyWebhook(BaseModel):
+    """Represents a normalized Emby webhook payload."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    payload: EmbyWebhookPayload
+
+    @property
+    def event(self) -> str:
+        """Raw event string from Emby."""
+        return self.payload.event
+
+    @property
+    def event_type(self) -> EmbyWebhookEventType | None:
+        """Webhook event type normalized to enum values."""
+        raw = (self.payload.event or "").strip().lower()
+        try:
+            return EmbyWebhookEventType(raw)
+        except ValueError:
+            return None
+
+    @property
+    def account_id(self) -> str | None:
+        """The webhook user's Emby account ID, if present."""
+        return self.payload.user.id if self.payload.user else None
+
+    @property
     def top_level_item_id(self) -> str | None:
-        """Return the top-level item id suitable for library sync keys."""
-        item_type = (self.item_type or "").lower()
-        if item_type in {"episode", "season"} and self.series_id:
-            return self.series_id
-        return self.item_id or self.series_id
+        """The top-level media item ID for the payload."""
+        item = self.payload.item
+        if not item:
+            return None
+        return item.series_id or item.parent_id or item.id
+
+
+class WebhookParser:
+    """Parser for incoming Emby webhooks."""
+
+    @staticmethod
+    def media_type(content_type: str | None) -> str:
+        """Read the media type portion of a Content-Type header."""
+        if not content_type:
+            return ""
+        return content_type.split(";", 1)[0].strip().lower()
 
     @classmethod
     async def from_request(cls, request: Request) -> EmbyWebhook:
-        """Create a webhook payload from an incoming HTTP request."""
-        content_type = request.headers.get("content-type", "").lower()
+        """Create an Emby webhook instance from an incoming HTTP request."""
+        content_type = cls.media_type(request.headers.get("content-type"))
 
-        if content_type.startswith(
-            ("multipart/form-data", "application/x-www-form-urlencoded")
-        ):
+        if content_type in ("multipart/form-data", "application/x-www-form-urlencoded"):
             form = await request.form()
-            payload_raw = form.get("payload")
-            if payload_raw:
-                try:
-                    data = json.loads(str(payload_raw))
-                except json.JSONDecodeError as exc:
-                    raise ValueError(f"Invalid payload JSON: {exc}") from exc
-            else:
-                data = {str(key): value for key, value in form.items()}
-        else:
+            payload_raw = form.get("data")
+
+            if not payload_raw:
+                raise ValueError("Missing 'data' field in form request")
+
+            if isinstance(payload_raw, bytes):
+                payload_raw = payload_raw.decode("utf-8", "replace")
+
+            try:
+                payload = EmbyWebhookPayload.model_validate_json(str(payload_raw))
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid Emby payload JSON in 'data' field: {e}"
+                ) from e
+
+            return EmbyWebhook(payload=payload)
+
+        if content_type == "application/json":
             try:
                 data = await request.json()
-            except Exception as exc:
-                raise ValueError(f"Invalid JSON body: {exc}") from exc
+            except Exception as e:
+                raise ValueError(f"Invalid JSON body: {e}") from e
 
-        if isinstance(data, str):
+            if isinstance(data, str):
+                try:
+                    payload = EmbyWebhookPayload.model_validate_json(data)
+                except Exception as e:
+                    raise ValueError(f"Invalid Emby webhook payload: {e}") from e
+                return EmbyWebhook(payload=payload)
+
+            if not isinstance(data, dict):
+                raise ValueError("Invalid payload structure: expected JSON object")
+
             try:
-                data = json.loads(data)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON payload: {exc}") from exc
+                payload = EmbyWebhookPayload.model_validate(data)
+            except Exception as e:
+                raise ValueError(f"Invalid Emby webhook payload: {e}") from e
 
-        if not isinstance(data, Mapping):
-            raise ValueError("Invalid payload structure: expected a JSON object")
+            return EmbyWebhook(payload=payload)
 
-        return cls(data)
-
-    def _string_value(self, key: str) -> str | None:
-        """Return a string value for a key if present and non-empty."""
-        value = self._data.get(key)
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text if text else None
+        raise ValueError(
+            f"Unsupported content type '{content_type}' for Emby webhook "
+            "(expected multipart/form-data or application/json)"
+        )

@@ -25,10 +25,7 @@ from emby_client.models.base_item_dto import BaseItemDto
 
 from anibridge.providers.library.emby.client import EmbyClient
 from anibridge.providers.library.emby.config import EmbyProviderConfig
-from anibridge.providers.library.emby.webhook import (
-    EmbyWebhook,
-    EmbyWebhookNotificationType,
-)
+from anibridge.providers.library.emby.webhook import EmbyWebhookEventType, WebhookParser
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -475,59 +472,54 @@ class EmbyLibraryProvider(LibraryProvider):
 
     async def parse_webhook(self, request: Request) -> tuple[bool, Sequence[str]]:
         """Parse an Emby webhook request and determine affected media items."""
-        payload = await EmbyWebhook.from_request(request)
+        payload = await WebhookParser.from_request(request)
 
-        if not payload.notification_type:
-            self.log.warning("Webhook: No notification type found in payload")
-            raise ValueError("No notification type found in webhook payload")
+        if not payload.event_type:
+            self.log.warning("Webhook: No supported event type found in payload")
+            raise ValueError("No supported event type found in webhook payload")
 
         if not payload.top_level_item_id:
             self.log.warning("Webhook: No item ID found in payload")
             raise ValueError("No item ID found in webhook payload")
 
         sync_events = {
-            EmbyWebhookNotificationType.ITEM_ADDED,
-            EmbyWebhookNotificationType.PLAYBACK_STOP,
-            EmbyWebhookNotificationType.USER_DATA_SAVED,
+            EmbyWebhookEventType.ITEM_MARK_FAVORITE,
+            EmbyWebhookEventType.ITEM_MARK_PLAYED,
+            EmbyWebhookEventType.ITEM_MARK_UNFAVORITE,
+            EmbyWebhookEventType.ITEM_MARK_UNPLAYED,
+            EmbyWebhookEventType.ITEM_RATE,
+            EmbyWebhookEventType.LIBRARY_NEW,
+            EmbyWebhookEventType.PLAYBACK_STOP,
         }
 
-        try:
-            notification_type = EmbyWebhookNotificationType(payload.notification_type)
-        except ValueError:
-            self.log.debug(
-                "Webhook: Ignoring unsupported event type %s",
-                payload.notification_type,
-            )
+        event_type = payload.event_type
+        if event_type not in sync_events:
+            self.log.debug("Webhook: Ignoring event type %s", event_type)
             return (False, tuple())
 
-        if notification_type not in sync_events:
-            self.log.debug("Webhook: Ignoring event type %s", notification_type)
-            return (False, tuple())
-
-        if notification_type != EmbyWebhookNotificationType.ITEM_ADDED:
+        if event_type != EmbyWebhookEventType.LIBRARY_NEW:
             if not self._user:
                 self.log.warning("Webhook: Provider user has not been initialized")
                 return (False, tuple())
 
-            user_id_match = (
-                payload.user_id and payload.user_id.lower() == self._user.key.lower()
-            )
-            user_name_match = (
-                payload.username
-                and self._user.title
-                and payload.username.lower() == self._user.title.lower()
-            )
-            if not (user_id_match or user_name_match):
+            if not payload.account_id:
+                self.log.debug(
+                    "Webhook: Ignoring event %s with no account id",
+                    event_type,
+                )
+                return (False, tuple())
+
+            if payload.account_id.lower() != self._user.key.lower():
                 self.log.debug(
                     "Webhook: Ignoring event %s for user ID %s",
-                    notification_type,
-                    payload.user_id,
+                    event_type,
+                    payload.account_id,
                 )
                 return (False, tuple())
 
         self.log.debug(
             "Webhook: Matched webhook event %s for sync key %s",
-            notification_type,
+            event_type,
             payload.top_level_item_id,
         )
         return (True, (payload.top_level_item_id,))

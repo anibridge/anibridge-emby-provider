@@ -199,7 +199,33 @@ class FakeRequest:
         return self._payload
 
     async def form(self):
-        return {"payload": self._payload}
+        return {"data": self._payload}
+
+
+def _webhook_payload(
+    *,
+    event: str,
+    item: dict[str, object] | None = None,
+    user: dict[str, object] | None = None,
+    session: dict[str, object] | None = None,
+    playback_info: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "Title": "demo webhook",
+        "Date": "2026-04-16T17:57:44.5525618Z",
+        "Event": event,
+        "Severity": "Info",
+        "Server": {"Name": "emby", "Id": "server-1", "Version": "4.9.3.0"},
+    }
+    if item is not None:
+        payload["Item"] = item
+    if user is not None:
+        payload["User"] = user
+    if session is not None:
+        payload["Session"] = session
+    if playback_info is not None:
+        payload["PlaybackInfo"] = playback_info
+    return payload
 
 
 @pytest.fixture()
@@ -509,56 +535,119 @@ async def test_parse_webhook_behaviors(library_setup):
 
     should_sync, keys = await provider.parse_webhook(
         FakeRequest(
-            payload={
-                "NotificationType": "ItemAdded",
-                "ItemType": "Movie",
-                "ItemId": movie.id,
-            }
-        )
-    )
-    assert should_sync is True and keys == (movie.id,)
-
-    should_sync, keys = await provider.parse_webhook(
-        FakeRequest(
-            payload={
-                "NotificationType": "PlaybackStop",
-                "ItemType": "Episode",
-                "ItemId": "episode-1",
-                "SeriesId": "show-1",
-                "UserId": "user-1",
-            }
+            payload=_webhook_payload(
+                event="playback.stop",
+                user={"Id": "user-1", "Name": "Demo User"},
+                item={
+                    "Name": "Episode 1",
+                    "ServerId": "server-1",
+                    "Id": "episode-1",
+                    "Path": "/library/show-1/season-1/episode-1.mkv",
+                    "Type": "Episode",
+                    "SeriesId": "show-1",
+                },
+                session={
+                    "Client": "Emby Web",
+                    "DeviceName": "Firefox Windows",
+                    "DeviceId": "device-1",
+                    "ApplicationVersion": "4.9.3.0",
+                    "Id": "session-1",
+                },
+                playback_info={"PlayedToCompletion": True},
+            )
         )
     )
     assert should_sync is True and keys == ("show-1",)
 
     should_sync, keys = await provider.parse_webhook(
         FakeRequest(
-            payload={
-                "NotificationType": "UserDataSaved",
-                "ItemType": "Movie",
-                "ItemId": movie.id,
-                "UserId": "another-user",
-            }
+            payload=_webhook_payload(
+                event="item.rate",
+                user={"Id": "user-1", "Name": "Demo User"},
+                item={
+                    "Name": "Episode 1",
+                    "ServerId": "server-1",
+                    "Id": "episode-1",
+                    "Path": "/library/show-1/season-1/episode-1.mkv",
+                    "Type": "Episode",
+                    "SeriesId": "show-1",
+                    "UserData": {"IsFavorite": True, "Played": False},
+                },
+            )
+        )
+    )
+    assert should_sync is True and keys == ("show-1",)
+
+    should_sync, keys = await provider.parse_webhook(
+        FakeRequest(
+            payload=_webhook_payload(
+                event="item.rate",
+                user={"Id": "user-1", "Name": "Demo User"},
+                item={
+                    "Name": "Season 1",
+                    "ServerId": "server-1",
+                    "Id": "season-1",
+                    "ParentId": "show-1",
+                    "Type": "Season",
+                    "UserData": {"IsFavorite": True, "Played": False},
+                },
+            )
+        )
+    )
+    assert should_sync is True and keys == ("show-1",)
+
+    should_sync, keys = await provider.parse_webhook(
+        FakeRequest(
+            payload=_webhook_payload(
+                event="playback.stop",
+                user={"Id": "another-user", "Name": "Someone Else"},
+                item={
+                    "Name": movie.name,
+                    "ServerId": "server-1",
+                    "Id": movie.id,
+                    "Path": "/library/movie-1.mkv",
+                    "Type": "Movie",
+                },
+                session={
+                    "Client": "Emby Web",
+                    "DeviceName": "Firefox Windows",
+                    "DeviceId": "device-1",
+                    "ApplicationVersion": "4.9.3.0",
+                    "Id": "session-1",
+                },
+                playback_info={"PlayedToCompletion": True},
+            )
         )
     )
     assert should_sync is False and keys == ()
 
-    should_sync, keys = await provider.parse_webhook(
-        FakeRequest(
-            payload={
-                "NotificationType": "SessionStart",
-                "ItemType": "Movie",
-                "ItemId": movie.id,
-            }
+    with pytest.raises(ValueError, match="No supported event type found"):
+        await provider.parse_webhook(
+            FakeRequest(
+                payload=_webhook_payload(
+                    event="session.start",
+                    user={"Id": "user-1", "Name": "Demo User"},
+                    item={
+                        "Name": movie.name,
+                        "ServerId": "server-1",
+                        "Id": movie.id,
+                        "Path": "/library/movie-1.mkv",
+                        "Type": "Movie",
+                    },
+                )
+            )
         )
-    )
-    assert should_sync is False and keys == ()
 
     with pytest.raises(ValueError):
         await provider.parse_webhook(FakeRequest(payload={"ItemId": movie.id}))
     with pytest.raises(ValueError):
         await provider.parse_webhook(
-            FakeRequest(payload={"NotificationType": "ItemAdded", "ItemType": "Movie"})
+            FakeRequest(
+                payload=_webhook_payload(
+                    event="playback.stop",
+                    user={"Id": "user-1", "Name": "Demo User"},
+                )
+            )
         )
 
 

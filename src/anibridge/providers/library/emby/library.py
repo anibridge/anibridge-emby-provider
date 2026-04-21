@@ -257,7 +257,7 @@ class EmbyLibraryShow(EmbyLibraryEntry, LibraryShow["EmbyLibraryProvider"]):
         seasons = self.seasons()
         return tuple(episode for season in seasons for episode in season.episodes())
 
-    @ttl_cache(ttl=15)
+    @ttl_cache(ttl=15, maxsize=1)
     def seasons(self) -> Sequence[EmbyLibrarySeason]:
         """Return all seasons belonging to the show."""
         if self._item.id is None:
@@ -285,7 +285,7 @@ class EmbyLibrarySeason(EmbyLibraryEntry, LibrarySeason["EmbyLibraryProvider"]):
         self._show = show
         self.index = int(item.index_number or 0)
 
-    @ttl_cache(ttl=15)
+    @ttl_cache(ttl=15, maxsize=1)
     def episodes(self) -> Sequence[EmbyLibraryEpisode]:
         """Return the episodes belonging to this season."""
         show_id = self._item.series_id or self._item.parent_id

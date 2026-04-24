@@ -54,13 +54,16 @@ async def test_initialize_and_close(
     )
     monkeypatch.setattr(client, "_load_sections", lambda: [SimpleNamespace(id="sec-1")])
     monkeypatch.setattr(
-        client, "_load_show_metadata_fetchers", lambda: {"sec-1": "AniDb"}
+        client,
+        "_load_show_metadata_fetcher_orders",
+        lambda: {"sec-1": ("AniDb", "AniList")},
     )
 
     await client.initialize()
     assert client.user_id() == "u-1"
     assert client.user_name() == "Demo"
     assert len(client.sections()) == 1
+    assert client.show_metadata_fetchers_for_section("sec-1") == ("AniDb", "AniList")
     assert client.show_metadata_fetcher_for_section("sec-1") == "AniDb"
 
     await client.close()
@@ -537,6 +540,7 @@ def test_load_show_metadata_fetchers_and_item_filters(
             )
         ),
     )
+    assert client._load_show_metadata_fetcher_orders() == {"sec-shows": ("AniList",)}
     assert client._load_show_metadata_fetchers() == {"sec-shows": "AniList"}
 
     now = datetime.now(UTC)

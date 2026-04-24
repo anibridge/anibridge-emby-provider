@@ -57,12 +57,14 @@ class FakeEmbyClient:
         *,
         sections: list[FakeItem],
         items: dict[str, list[FakeItem]],
-        show_metadata_fetchers_by_section: dict[str, str] | None = None,
+        show_metadata_fetcher_orders_by_section: dict[str, tuple[str, ...]]
+        | None = None,
     ):
         self._sections = sections
         self._items = items
-        self._show_metadata_fetchers_by_section = (
-            show_metadata_fetchers_by_section or {}
+        self._show_metadata_fetcher_orders_by_section = (
+            show_metadata_fetcher_orders_by_section
+            or {section.id: () for section in sections}
         )
         self._user_id = "user-1"
         self._user_name = "Demo User"
@@ -153,7 +155,11 @@ class FakeEmbyClient:
         return None
 
     def show_metadata_fetcher_for_section(self, section_id: str) -> str | None:
-        return self._show_metadata_fetchers_by_section.get(section_id)
+        fetchers = self._show_metadata_fetcher_orders_by_section.get(section_id, ())
+        return fetchers[0] if fetchers else None
+
+    def show_metadata_fetchers_for_section(self, section_id: str) -> tuple[str, ...]:
+        return self._show_metadata_fetcher_orders_by_section.get(section_id, ())
 
 
 def _parse_date(value: str | None) -> datetime:
@@ -312,7 +318,9 @@ def library_setup(monkeypatch: pytest.MonkeyPatch):
     fake_client = FakeEmbyClient(
         sections=sections,
         items=items,
-        show_metadata_fetchers_by_section={"sec-shows": "AniDB"},
+        show_metadata_fetcher_orders_by_section={
+            "sec-shows": ("AniDB", "AniList", "TheTVDB")
+        },
     )
 
     monkeypatch.setattr(
@@ -509,7 +517,7 @@ async def test_strict_mode_filters_show_mappings(monkeypatch: pytest.MonkeyPatch
     fake_client = FakeEmbyClient(
         sections=[section],
         items={"sec-shows": [show], "seasons:show-1": [], "episodes:show-1": []},
-        show_metadata_fetchers_by_section={"sec-shows": "AniDB"},
+        show_metadata_fetcher_orders_by_section={"sec-shows": ("AniDB",)},
     )
 
     monkeypatch.setattr(
@@ -531,6 +539,55 @@ async def test_strict_mode_filters_show_mappings(monkeypatch: pytest.MonkeyPatch
     section_wrapper = (await provider.get_sections())[0]
     show_item = (await provider.list_items(section_wrapper))[0]
     assert show_item.mapping_descriptors() == (("anidb", "3333", None),)
+
+
+@pytest.mark.asyncio
+async def test_non_strict_mode_orders_descriptors_by_metadata_fetcher_priority(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Non-strict mode should keep all mapped ids in section fetcher order."""
+    show = FakeItem(
+        id="show-1",
+        name="Show One",
+        type="Series",
+        provider_ids={"AniList": "4444", "Tvdb": "55"},
+    )
+    section = FakeItem(
+        id="sec-shows",
+        name="Shows",
+        type="CollectionFolder",
+        collection_type="tvshows",
+    )
+    fake_client = FakeEmbyClient(
+        sections=[section],
+        items={"sec-shows": [show], "seasons:show-1": [], "episodes:show-1": []},
+        show_metadata_fetcher_orders_by_section={
+            "sec-shows": ("AniDB", "AniList", "TheTVDB")
+        },
+    )
+
+    monkeypatch.setattr(
+        library_module.EmbyLibraryProvider,
+        "_create_client",
+        lambda self: fake_client,
+    )
+    provider = library_module.EmbyLibraryProvider(
+        config={
+            "url": "http://emby",
+            "token": "token",
+            "user": "demo",
+            "strict": False,
+        },
+        logger=_test_logger(),
+    )
+    await provider.initialize()
+
+    section_wrapper = (await provider.get_sections())[0]
+    show_item = (await provider.list_items(section_wrapper))[0]
+    assert show_item.mapping_descriptors() == (
+        ("anilist", "4444", None),
+        ("tvdb_show", "55", None),
+    )
 
 
 @pytest.mark.asyncio

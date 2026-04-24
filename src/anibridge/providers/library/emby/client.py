@@ -78,7 +78,7 @@ class EmbyClient:
         self._user_name: str | None = None
         self._base_url = url.rstrip("/")
         self._sections: list[BaseItemDto] = []
-        self._show_metadata_fetcher_by_section_id: dict[str, str] = {}
+        self._show_metadata_fetcher_order_by_section_id: dict[str, tuple[str, ...]] = {}
         self._continue_cache: dict[str, _FrozenCacheEntry] = {}
 
     async def initialize(self) -> None:
@@ -89,8 +89,8 @@ class EmbyClient:
         self._user_id = str(user.id)
         self._user_name = str(user.name or user.id)
         self._sections = await asyncio.to_thread(self._load_sections)
-        self._show_metadata_fetcher_by_section_id = await asyncio.to_thread(
-            self._load_show_metadata_fetchers
+        self._show_metadata_fetcher_order_by_section_id = await asyncio.to_thread(
+            self._load_show_metadata_fetcher_orders
         )
 
     async def close(self) -> None:
@@ -105,7 +105,7 @@ class EmbyClient:
         self._user_id = None
         self._user_name = None
         self._sections.clear()
-        self._show_metadata_fetcher_by_section_id.clear()
+        self._show_metadata_fetcher_order_by_section_id.clear()
         self.clear_cache()
 
     def user_id(self) -> str:
@@ -153,7 +153,19 @@ class EmbyClient:
         Returns:
             str | None: The metadata fetcher name or None if not known.
         """
-        return self._show_metadata_fetcher_by_section_id.get(section_id)
+        fetchers = self._show_metadata_fetcher_order_by_section_id.get(section_id, ())
+        return fetchers[0] if fetchers else None
+
+    def show_metadata_fetchers_for_section(self, section_id: str) -> Sequence[str]:
+        """Return enabled TV metadata fetchers for a section in priority order.
+
+        Args:
+            section_id (str): The Emby section id.
+
+        Returns:
+            Sequence[str]: Metadata fetcher names ordered by section priority.
+        """
+        return self._show_metadata_fetcher_order_by_section_id.get(section_id, ())
 
     async def list_section_items(
         self,
@@ -355,10 +367,7 @@ class EmbyClient:
             series_ids: set[str] = set()
             try:
                 next_up_response = self._tv_shows_api.get_shows_nextup(
-                    self._user_id,
-                    limit=1000,
-                    enable_user_data=False,
-                    parent_id=section_id,
+                    self._user_id, enable_user_data=False, parent_id=section_id
                 )
                 items = self._extract_items(next_up_response)
                 for next_up_item in items:
@@ -657,10 +666,19 @@ class EmbyClient:
 
     def _load_show_metadata_fetchers(self) -> dict[str, str]:
         """Get the top-priority TV metadata fetcher for each section if known."""
+        fetcher_orders = self._load_show_metadata_fetcher_orders()
+        return {
+            section_id: fetchers[0]
+            for section_id, fetchers in fetcher_orders.items()
+            if fetchers
+        }
+
+    def _load_show_metadata_fetcher_orders(self) -> dict[str, tuple[str, ...]]:
+        """Get enabled TV metadata fetchers for each section in priority order."""
         if self._library_structure_api is None:
             raise RuntimeError("Emby client has not been initialized")
 
-        section_metadata_fetchers: dict[str, str] = {}
+        section_metadata_fetchers: dict[str, tuple[str, ...]] = {}
         response = self._library_structure_api.get_library_virtualfolders_query()
         virtual_folders = self._extract_items(response)
 
@@ -674,34 +692,38 @@ class EmbyClient:
             if not type_options:
                 continue
 
-            metadata_fetcher: str | None = None
+            metadata_fetchers: tuple[str, ...] = ()
             for option in type_options:
                 if str(option.type or "").lower() != "series":
                     continue
 
                 ordered_fetchers = option.metadata_fetcher_order or []
-                enabled_fetchers = option.metadata_fetchers
+                enabled_fetchers = option.metadata_fetchers or []
                 enabled_set = set(enabled_fetchers) if enabled_fetchers else None
+                prioritized_fetchers: list[str] = []
+                seen_fetchers: set[str] = set()
 
                 if ordered_fetchers:
                     for fetcher in ordered_fetchers:
-                        if not fetcher:
+                        if not fetcher or fetcher in seen_fetchers:
                             continue
                         if enabled_set is not None and fetcher not in enabled_set:
                             continue
-                        metadata_fetcher = fetcher
-                        break
-                else:
-                    for fetcher in enabled_fetchers or []:
-                        if fetcher:
-                            metadata_fetcher = fetcher
-                            break
+                        prioritized_fetchers.append(fetcher)
+                        seen_fetchers.add(fetcher)
 
-                if metadata_fetcher:
+                for fetcher in enabled_fetchers:
+                    if not fetcher or fetcher in seen_fetchers:
+                        continue
+                    prioritized_fetchers.append(fetcher)
+                    seen_fetchers.add(fetcher)
+
+                if prioritized_fetchers:
+                    metadata_fetchers = tuple(prioritized_fetchers)
                     break
 
-            if metadata_fetcher:
-                section_metadata_fetchers[section_id] = metadata_fetcher
+            if metadata_fetchers:
+                section_metadata_fetchers[section_id] = metadata_fetchers
 
         return section_metadata_fetchers
 

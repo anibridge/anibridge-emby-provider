@@ -47,7 +47,7 @@ _PROVIDER_ID_MAP = {
     },
 }
 
-_STRICT_FETCHER_TO_PROVIDER = {
+_SHOW_FETCHER_TO_PROVIDER = {
     "AniDB": "anidb",
     "AniList": "anilist",
     "TheTVDB": "tvdb_show",
@@ -141,30 +141,35 @@ class EmbyLibraryEntry(LibraryEntry["EmbyLibraryProvider"]):
         provider_ids = self._item.provider_ids or {}
         media_key = "show" if self._media_kind == MediaKind.SHOW else "movie"
         mapping = _PROVIDER_ID_MAP.get(media_key, {})
-        descriptors: list[MappingDescriptor] = []
-
-        for provider_key, value in provider_ids.items():
-            if not value:
-                continue
-            normalized = str(provider_key).lower()
-            mapped = mapping.get(normalized)
-            if not mapped:
-                continue
-            descriptors.append((mapped, str(value), None))
-
-        if self._media_kind == MediaKind.SHOW and self._provider.parsed_config.strict:
-            required_provider = self._provider._strict_show_provider_by_section.get(
-                self._section.key
+        if self._media_kind != MediaKind.SHOW:
+            return tuple(
+                (mapped, str(value), None)
+                for provider_key, value in provider_ids.items()
+                if value and (mapped := mapping.get(str(provider_key).lower()))
             )
-            if not required_provider:
-                return ()
-            descriptors = [
-                descriptor
-                for descriptor in descriptors
-                if descriptor[0] == required_provider
-            ]
 
-        return tuple(descriptors)
+        descriptors = {
+            mapped: (mapped, str(value), None)
+            for provider_key, value in provider_ids.items()
+            if value and (mapped := mapping.get(str(provider_key).lower()))
+        }
+        provider_order = self._provider._show_provider_order_by_section.get(
+            self._section.key, ()
+        )
+
+        if self._provider.parsed_config.strict:
+            return (
+                (descriptors[provider_order[0]],)
+                if provider_order[:1] and provider_order[0] in descriptors
+                else ()
+            )
+
+        ordered = [
+            descriptors.pop(provider)
+            for provider in provider_order
+            if provider in descriptors
+        ]
+        return tuple(ordered) + tuple(descriptors.values())
 
     @property
     def on_watching(self) -> bool:
@@ -397,7 +402,7 @@ class EmbyLibraryProvider(LibraryProvider):
         self._user: LibraryUser | None = None
         self._sections: list[EmbyLibrarySection] = []
         self._section_map: dict[str, EmbyLibrarySection] = {}
-        self._strict_show_provider_by_section: dict[str, str] = {}
+        self._show_provider_order_by_section: dict[str, tuple[str, ...]] = {}
 
     async def initialize(self) -> None:
         """Connect to Emby and prepare provider state."""
@@ -408,19 +413,23 @@ class EmbyLibraryProvider(LibraryProvider):
             title=self._client.user_name(),
         )
         self._sections = self._build_sections()
-        self._strict_show_provider_by_section.clear()
+        self._show_provider_order_by_section.clear()
 
-        if self.parsed_config.strict:
-            for section in self._sections:
-                if section.media_kind != MediaKind.SHOW:
-                    continue
-                metadata_fetcher = self._client.show_metadata_fetcher_for_section(
+        for section in self._sections:
+            if section.media_kind != MediaKind.SHOW:
+                continue
+
+            provider_order = tuple(
+                provider
+                for metadata_fetcher in self._client.show_metadata_fetchers_for_section(
                     section.key
                 )
-                if not metadata_fetcher:
-                    continue
-                if provider := _STRICT_FETCHER_TO_PROVIDER.get(metadata_fetcher):
-                    self._strict_show_provider_by_section[section.key] = provider
+                if (provider := _SHOW_FETCHER_TO_PROVIDER.get(metadata_fetcher))
+            )
+            if not provider_order:
+                continue
+
+            self._show_provider_order_by_section[section.key] = provider_order
 
         self.log.debug(
             "Emby provider initialized for user id=%s with %s sections",
@@ -434,7 +443,7 @@ class EmbyLibraryProvider(LibraryProvider):
         await self._client.close()
         self._sections.clear()
         self._section_map.clear()
-        self._strict_show_provider_by_section.clear()
+        self._show_provider_order_by_section.clear()
         self.log.debug("Closed Emby provider")
 
     def user(self) -> LibraryUser | None:

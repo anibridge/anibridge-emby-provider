@@ -325,7 +325,15 @@ def test_is_on_continue_watching_variants(emby_client_instance: EmbyClient) -> N
                 raise TypeError("bad")
             if self.calls == 3:
                 return SimpleNamespace(items=[])
-            return SimpleNamespace(items=[SimpleNamespace(id="ep", series_id="show-1")])
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        id="ep-1",
+                        series_id="show-1",
+                        season_id="season-1",
+                    )
+                ]
+            )
 
     tv_api = _FakeTvShowsApi()
     client._tv_shows_api = cast(Any, tv_api)
@@ -378,6 +386,87 @@ def test_is_on_continue_watching_variants(emby_client_instance: EmbyClient) -> N
     assert tv_api.calls == 1
 
 
+def test_is_on_continue_watching_scopes_next_up_to_active_season_and_episode(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Next Up should only mark the matching season and episode as active."""
+    client = emby_client_instance
+    client._user_id = "user-1"
+
+    class _FakeTvShowsApi:
+        def get_shows_nextup(self, user_id: str, **kwargs: Any):
+            assert user_id == "user-1"
+            assert kwargs["parent_id"] == "sec-1"
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        id="ep-current",
+                        series_id="show-1",
+                        season_id="season-2",
+                    )
+                ]
+            )
+
+    client._tv_shows_api = cast(Any, _FakeTvShowsApi())
+    section = SimpleNamespace(id="sec-1")
+
+    series = SimpleNamespace(
+        type="Series",
+        id="show-1",
+        series_id=None,
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    season_1 = SimpleNamespace(
+        type="Season",
+        id="season-1",
+        series_id="show-1",
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    season_2 = SimpleNamespace(
+        type="Season",
+        id="season-2",
+        series_id="show-1",
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    finished_episode = SimpleNamespace(
+        type="Episode",
+        id="ep-finished",
+        series_id="show-1",
+        season_id="season-1",
+        parent_id="season-1",
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+    current_episode = SimpleNamespace(
+        type="Episode",
+        id="ep-current",
+        series_id="show-1",
+        season_id="season-2",
+        parent_id="season-2",
+        date_created=None,
+        user_data=SimpleNamespace(last_played_date=None),
+    )
+
+    assert client.is_on_continue_watching(cast(Any, section), cast(Any, series)) is True
+    assert (
+        client.is_on_continue_watching(cast(Any, section), cast(Any, season_1)) is False
+    )
+    assert (
+        client.is_on_continue_watching(cast(Any, section), cast(Any, season_2)) is True
+    )
+    assert (
+        client.is_on_continue_watching(cast(Any, section), cast(Any, finished_episode))
+        is False
+    )
+    assert (
+        client.is_on_continue_watching(cast(Any, section), cast(Any, current_episode))
+        is True
+    )
+
+
 def test_is_on_continue_watching_uses_stale_deck_on_refresh_failure(
     emby_client_instance: EmbyClient,
 ) -> None:
@@ -393,7 +482,13 @@ def test_is_on_continue_watching_uses_stale_deck_on_refresh_failure(
             self.calls += 1
             if self.calls == 1:
                 return SimpleNamespace(
-                    items=[SimpleNamespace(id="ep", series_id="show-stale")]
+                    items=[
+                        SimpleNamespace(
+                            id="ep",
+                            series_id="show-stale",
+                            season_id=None,
+                        )
+                    ]
                 )
             raise TypeError("bad")
 
@@ -443,9 +538,11 @@ def test_is_on_continue_watching_cache_is_section_scoped(
             parent_id = kwargs.get("parent_id")
             if parent_id == "sec-1":
                 return SimpleNamespace(
-                    items=[SimpleNamespace(id="ep", series_id="show-1")]
+                    items=[SimpleNamespace(id="ep", series_id="show-1", season_id=None)]
                 )
-            return SimpleNamespace(items=[SimpleNamespace(id="ep", series_id="show-2")])
+            return SimpleNamespace(
+                items=[SimpleNamespace(id="ep", series_id="show-2", season_id=None)]
+            )
 
     tv_api = _FakeTvShowsApi()
     client._tv_shows_api = cast(Any, tv_api)
@@ -487,7 +584,9 @@ def test_is_on_continue_watching_refreshes_when_item_activity_is_newer(
             self.calls += 1
             if self.calls == 1:
                 return SimpleNamespace(items=[])
-            return SimpleNamespace(items=[SimpleNamespace(id="ep", series_id="show-2")])
+            return SimpleNamespace(
+                items=[SimpleNamespace(id="ep", series_id="show-2", season_id=None)]
+            )
 
     tv_api = _FakeTvShowsApi()
     client._tv_shows_api = cast(Any, tv_api)
@@ -534,7 +633,9 @@ def test_is_on_continue_watching_refreshes_when_cache_ttl_expires(
 
         def get_shows_nextup(self, user_id: str, **kwargs: Any):
             self.calls += 1
-            return SimpleNamespace(items=[SimpleNamespace(id="ep", series_id="show-2")])
+            return SimpleNamespace(
+                items=[SimpleNamespace(id="ep", series_id="show-2", season_id=None)]
+            )
 
     tv_api = _FakeTvShowsApi()
     client._tv_shows_api = cast(Any, tv_api)

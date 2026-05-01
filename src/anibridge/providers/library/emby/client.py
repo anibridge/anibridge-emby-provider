@@ -30,7 +30,7 @@ type _ItemsQueryResult = (
 
 @dataclass(frozen=True, slots=True)
 class _FrozenCacheEntry:
-    """Immutable Next Up deck cache entry with a creation timestamp."""
+    """Immutable Next Up deck cache entry with scoped item ids."""
 
     keys: frozenset[str]
     cached_at: datetime
@@ -352,19 +352,20 @@ class EmbyClient:
         """
         if self._tv_shows_api is None or self._user_id is None:
             raise RuntimeError("Emby client has not been initialized")
-        if section.id is None or (item.type or "").lower() == "movie":
+        if (
+            section.id is None
+            or item.id is None
+            or (item.type or "").lower() not in {"series", "season", "episode"}
+        ):
+            # Next Up only applies to TV content.
             return False
 
         now = datetime.now(tz=UTC)
-        series_id: str | None = item.series_id or item.id
-        if not series_id:
-            return False
-
         section_id = str(section.id)
         cache_entry = self._continue_cache.get(section_id)
         user_data = cast(UserItemDataDto, item.user_data)
         # Refresh when no cache exists, TTL expired, or an item timestamp is newer
-        # than the cache. The TTL acts as a safety net because Jellyfin doesn't
+        # than the cache. The TTL acts as a safety net because Emby doesn't
         # always propagate episode activity to show-level timestamps.
         should_refresh = (
             cache_entry is None
@@ -385,7 +386,7 @@ class EmbyClient:
             if self._tv_shows_api is None or self._user_id is None:
                 raise RuntimeError("Emby client has not been initialized")
 
-            series_ids: set[str] = set()
+            keys: set[str] = set()
             try:
                 next_up_response = self._tv_shows_api.get_shows_nextup(
                     self._user_id, enable_user_data=False, parent_id=section_id
@@ -393,11 +394,15 @@ class EmbyClient:
                 items = self._extract_items(next_up_response)
                 for next_up_item in items:
                     next_up_base_item = cast(BaseItemDto, next_up_item)
-                    next_series_id = next_up_base_item.series_id
-                    if next_series_id is None:
-                        next_series_id = next_up_base_item.id
-                    if next_series_id is not None:
-                        series_ids.add(str(next_series_id))
+                    keys.update(
+                        str(key)
+                        for key in (
+                            next_up_base_item.id,
+                            next_up_base_item.series_id,
+                            next_up_base_item.season_id,
+                        )
+                        if key is not None
+                    )
             except Exception:
                 self.log.error(
                     "Failed to load continue watching items for section %s", section_id
@@ -405,13 +410,13 @@ class EmbyClient:
                 raise
 
             cache_entry = _FrozenCacheEntry(
-                keys=frozenset(series_ids),
+                keys=frozenset(keys),
                 cached_at=now,
             )
             self._continue_cache[section_id] = cache_entry
 
         assert cache_entry is not None
-        return series_id in cache_entry.keys
+        return str(item.id) in cache_entry.keys
 
     def is_on_watchlist(self, item: BaseItemDto) -> bool:
         """Determine whether the item is on the user's favorites list.

@@ -25,6 +25,19 @@ class _FakeItemsApi:
         return SimpleNamespace(items=items)
 
 
+class _FakeSystemApi:
+    def __init__(self, version: str | None = None, *, raises: Exception | None = None):
+        self.version = version
+        self.raises = raises
+        self.calls = 0
+
+    def get_system_info(self):
+        self.calls += 1
+        if self.raises is not None:
+            raise self.raises
+        return SimpleNamespace(version=self.version)
+
+
 @pytest.fixture()
 def emby_client_instance() -> EmbyClient:
     return EmbyClient(
@@ -136,6 +149,50 @@ def test_show_episode_and_item_lookup_success(emby_client_instance: EmbyClient) 
     assert [s.id for s in seasons] == ["season-1"]
     assert [e.id for e in episodes] == ["episode-1"]
     assert item.id == "movie-1"
+
+
+@pytest.mark.asyncio
+async def test_initialize_warns_when_server_major_version_is_not_supported(
+    monkeypatch: pytest.MonkeyPatch,
+    emby_client_instance: EmbyClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Initialization should warn when the Emby server major version is not 4."""
+    client = emby_client_instance
+
+    async def inline_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "anibridge.providers.library.emby.client.asyncio.to_thread", inline_to_thread
+    )
+    monkeypatch.setattr(client, "_configure_client", lambda: None)
+    monkeypatch.setattr(client, "_load_server_version", lambda: "5.0.0.1")
+    monkeypatch.setattr(
+        client, "_resolve_user", lambda: SimpleNamespace(id="u-1", name="Demo")
+    )
+    monkeypatch.setattr(client, "_load_sections", lambda: [SimpleNamespace(id="sec-1")])
+    monkeypatch.setattr(
+        client,
+        "_load_show_metadata_fetcher_orders",
+        lambda: {"sec-1": ("AniDb", "AniList")},
+    )
+
+    with caplog.at_level("WARNING"):
+        await client.initialize()
+
+    assert client.server_version() == "5.0.0.1"
+    assert "only tested with major version 4.x" in caplog.text
+
+
+def test_load_server_version_returns_none_when_system_info_fails(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Server version probing should be non-fatal when the endpoint fails."""
+    client = emby_client_instance
+    client._system_api = cast(Any, _FakeSystemApi(raises=RuntimeError("boom")))
+
+    assert client._load_server_version() is None
 
 
 @pytest.mark.asyncio

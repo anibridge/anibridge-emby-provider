@@ -73,9 +73,11 @@ class EmbyClient:
         self._library_structure_api: emby_client.LibraryStructureServiceApi | None = (
             None
         )
+        self._system_api: emby_client.SystemServiceApi | None = None
         self._tv_shows_api: emby_client.TvShowsServiceApi | None = None
         self._user_id: str | None = None
         self._user_name: str | None = None
+        self._server_version: str | None = None
         self._base_url = url.rstrip("/")
         self._sections: list[BaseItemDto] = []
         self._show_metadata_fetcher_order_by_section_id: dict[str, tuple[str, ...]] = {}
@@ -84,6 +86,8 @@ class EmbyClient:
     async def initialize(self) -> None:
         """Authenticate and populate server metadata."""
         await asyncio.to_thread(self._configure_client)
+        self._server_version = await asyncio.to_thread(self._load_server_version)
+        self._warn_if_unsupported_server_version()
         user = await asyncio.to_thread(self._resolve_user)
 
         self._user_id = str(user.id)
@@ -101,9 +105,11 @@ class EmbyClient:
         self._user_library_api = None
         self._user_views_api = None
         self._library_structure_api = None
+        self._system_api = None
         self._tv_shows_api = None
         self._user_id = None
         self._user_name = None
+        self._server_version = None
         self._sections.clear()
         self._show_metadata_fetcher_order_by_section_id.clear()
         self.clear_cache()
@@ -127,6 +133,10 @@ class EmbyClient:
         if self._user_name is None:
             raise RuntimeError("Emby client has not been initialized")
         return self._user_name
+
+    def server_version(self) -> str | None:
+        """Return the detected Emby server version, if available."""
+        return self._server_version
 
     def auth_headers(self) -> dict[str, str]:
         """Get request headers for authenticated Emby calls.
@@ -464,7 +474,33 @@ class EmbyClient:
         self._library_structure_api = emby_client.LibraryStructureServiceApi(
             self._api_client
         )
+        self._system_api = emby_client.SystemServiceApi(self._api_client)
         self._tv_shows_api = emby_client.TvShowsServiceApi(self._api_client)
+
+    def _load_server_version(self) -> str | None:
+        """Return the Emby server version reported by the server, if available."""
+        if self._system_api is None:
+            return None
+        try:
+            info = cast(SystemInfo, self._system_api.get_system_info())
+        except Exception:
+            self.log.debug("Failed to load Emby server version", exc_info=True)
+            return None
+
+        version = info.version
+        return str(version) if version else None
+
+    def _warn_if_unsupported_server_version(self) -> None:
+        """Warn when the detected Emby major version is not the supported one."""
+        if not self._server_version:
+            return
+        match = re.match(r"^\s*(\d+)", self._server_version)
+        if match is None or int(match.group(1)) != 4:
+            self.log.warning(
+                "Untested Emby server version detected: %s. The provider is only "
+                "tested with major version 4.x, so unexpected behavior may occur.",
+                self._server_version,
+            )
 
     def _resolve_user(self):
         """Locate the Emby user matching the configured identifier."""

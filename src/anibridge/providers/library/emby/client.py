@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib.metadata
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -12,9 +13,19 @@ import emby_client
 from anibridge.utils.datetime import normalize_local_datetime
 from anibridge.utils.types import ProviderLogger
 from emby_client.models.base_item_dto import BaseItemDto
+from emby_client.models.query_result_base_item_dto import QueryResultBaseItemDto
+from emby_client.models.query_result_user_dto import QueryResultUserDto
+from emby_client.models.query_result_virtual_folder_info import (
+    QueryResultVirtualFolderInfo,
+)
+from emby_client.models.system_info import SystemInfo
 from emby_client.models.user_item_data_dto import UserItemDataDto
 
 __all__ = ["EmbyClient"]
+
+type _ItemsQueryResult = (
+    QueryResultBaseItemDto | QueryResultUserDto | QueryResultVirtualFolderInfo
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,9 +392,10 @@ class EmbyClient:
                 )
                 items = self._extract_items(next_up_response)
                 for next_up_item in items:
-                    next_series_id = getattr(next_up_item, "series_id", None)
+                    next_up_base_item = cast(BaseItemDto, next_up_item)
+                    next_series_id = next_up_base_item.series_id
                     if next_series_id is None:
-                        next_series_id = getattr(next_up_item, "id", None)
+                        next_series_id = next_up_base_item.id
                     if next_series_id is not None:
                         series_ids.add(str(next_series_id))
             except Exception:
@@ -780,9 +792,9 @@ class EmbyClient:
         """Return list-like content from SDK responses with `.items` payloads."""
         if response is None:
             return []
-        items = getattr(response, "items", None)
-        if isinstance(items, list):
-            return items
         if isinstance(response, list):
             return response
+        items = cast(_ItemsQueryResult, response).items
+        if isinstance(items, list):
+            return items
         return []

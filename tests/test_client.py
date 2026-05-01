@@ -25,6 +25,29 @@ class _FakeItemsApi:
         return SimpleNamespace(items=items)
 
 
+class _FakeTvShowsLookupApi:
+    def __init__(
+        self,
+        *,
+        season_responses: list[list[Any]] | None = None,
+        episode_responses: list[list[Any]] | None = None,
+    ) -> None:
+        self.season_responses = season_responses or []
+        self.episode_responses = episode_responses or []
+        self.season_calls: list[dict[str, Any]] = []
+        self.episode_calls: list[dict[str, Any]] = []
+
+    def get_shows_by_id_seasons(self, user_id: str, show_id: str, **kwargs: Any):
+        self.season_calls.append({"user_id": user_id, "show_id": show_id, **kwargs})
+        items = self.season_responses.pop(0) if self.season_responses else []
+        return SimpleNamespace(items=items)
+
+    def get_shows_by_id_episodes(self, show_id: str, **kwargs: Any):
+        self.episode_calls.append({"show_id": show_id, **kwargs})
+        items = self.episode_responses.pop(0) if self.episode_responses else []
+        return SimpleNamespace(items=items)
+
+
 class _FakeSystemApi:
     def __init__(self, version: str | None = None, *, raises: Exception | None = None):
         self.version = version
@@ -149,6 +172,66 @@ def test_show_episode_and_item_lookup_success(emby_client_instance: EmbyClient) 
     assert [s.id for s in seasons] == ["season-1"]
     assert [e.id for e in episodes] == ["episode-1"]
     assert item.id == "movie-1"
+
+
+def test_show_lookup_uses_items_queries(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Season and episode traversal should use the generic items endpoint."""
+    client = emby_client_instance
+    client._user_id = "user-1"
+    client._items_api = cast(
+        Any,
+        _FakeItemsApi(
+            responses=[
+                [SimpleNamespace(id="season-items")],
+                [SimpleNamespace(id="episode-items")],
+            ]
+        ),
+    )
+
+    seasons = client.list_show_seasons("show-1")
+    episodes = client.list_show_episodes(show_id="show-1", season_id="season-1")
+
+    assert [s.id for s in seasons] == ["season-items"]
+    assert [e.id for e in episodes] == ["episode-items"]
+    assert client._items_api.calls == [
+        {
+            "user_id": "user-1",
+            "parent_id": "show-1",
+            "include_item_types": "Season",
+            "recursive": True,
+            "fields": ",".join(client.ITEM_FIELDS),
+            "enable_user_data": True,
+            "enable_images": True,
+        },
+        {
+            "user_id": "user-1",
+            "parent_id": "season-1",
+            "include_item_types": "Episode",
+            "recursive": True,
+            "fields": ",".join(client.ITEM_FIELDS),
+            "enable_user_data": True,
+            "enable_images": True,
+        },
+    ]
+
+
+def test_show_lookup_returns_empty_when_items_query_has_no_items(
+    emby_client_instance: EmbyClient,
+) -> None:
+    """Empty items query responses should be returned as-is without fallback."""
+    client = emby_client_instance
+    client._user_id = "user-1"
+    client._items_api = cast(
+        Any,
+        _FakeItemsApi(responses=[[], []]),
+    )
+    seasons = client.list_show_seasons("show-1")
+    episodes = client.list_show_episodes(show_id="show-1", season_id="season-1")
+
+    assert seasons == ()
+    assert episodes == ()
 
 
 @pytest.mark.asyncio

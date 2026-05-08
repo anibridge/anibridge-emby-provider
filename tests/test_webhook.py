@@ -4,7 +4,7 @@ import json
 from typing import cast
 
 import pytest
-from starlette.requests import Request
+from litestar.connection.request import Request
 
 from anibridge.providers.library.emby.webhook import (
     EmbyWebhookEventType,

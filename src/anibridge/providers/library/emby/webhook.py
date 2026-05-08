@@ -1,9 +1,12 @@
 """Emby webhook implementation."""
 
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import msgspec
-from starlette.requests import Request
+
+if TYPE_CHECKING:
+    from litestar.connection.request import Request
 
 
 class EmbyWebhookServer(msgspec.Struct, rename={"id": "Id"}):
@@ -122,7 +125,7 @@ class WebhookParser:
         return content_type.split(";", 1)[0].strip().lower()
 
     @classmethod
-    async def from_request(cls, request: Request) -> EmbyWebhook:
+    async def from_request(cls, request: "Request") -> EmbyWebhook:
         """Create an Emby webhook instance from an incoming HTTP request."""
         content_type = cls.media_type(request.headers.get("content-type"))
 

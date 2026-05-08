@@ -29,7 +29,7 @@ from anibridge.providers.library.emby.config import EmbyProviderConfig
 from anibridge.providers.library.emby.webhook import EmbyWebhookEventType, WebhookParser
 
 if TYPE_CHECKING:
-    from starlette.requests import Request
+    from litestar.connection.request import Request
 
 _PROVIDER_ID_MAP = {
     "movie": {

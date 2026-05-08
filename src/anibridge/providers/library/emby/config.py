@@ -1,34 +1,40 @@
 """Emby provider configuration."""
 
-from pydantic import BaseModel, Field
+from typing import Annotated
+
+import msgspec
 
 
-class EmbyProviderConfig(BaseModel):
+class EmbyProviderConfig(msgspec.Struct, kw_only=True):
     """Configuration for the Emby provider."""
 
-    url: str = Field(
-        default=...,
-        description="The base URL of the Emby server.",
-    )
-    token: str = Field(
-        default=...,
-        description="The Emby API token.",
-    )
-    user: str = Field(
-        default=...,
-        description="The Emby user to synchronize.",
-    )
-    sections: list[str] = Field(
-        default_factory=list,
-        description=(
-            "A list of Emby library section names to constrain synchronization to."
+    url: Annotated[
+        str,
+        msgspec.Meta(description="The base URL of the Emby server."),
+    ]
+    token: Annotated[
+        str,
+        msgspec.Meta(description="The Emby API token."),
+    ]
+    user: Annotated[
+        str,
+        msgspec.Meta(description="The Emby user to synchronize."),
+    ]
+    sections: Annotated[
+        list[str],
+        msgspec.Meta(
+            description=(
+                "A list of Emby library section names to constrain synchronization to."
+            )
         ),
-    )
-    genres: list[str] = Field(
-        default_factory=list,
-        description="A list of genres to constrain synchronization to.",
-    )
-    strict: bool = Field(
-        default=True,
-        description="Whether to enforce strict matching when resolving mappings.",
-    )
+    ] = msgspec.field(default_factory=list)
+    genres: Annotated[
+        list[str],
+        msgspec.Meta(description="A list of genres to constrain synchronization to."),
+    ] = msgspec.field(default_factory=list)
+    strict: Annotated[
+        bool,
+        msgspec.Meta(
+            description="Whether to enforce strict matching when resolving mappings."
+        ),
+    ] = True

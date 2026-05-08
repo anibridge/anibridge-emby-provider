@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+import msgspec
 from anibridge.library import (
     HistoryEntry,
     LibraryEntry,
@@ -397,7 +398,7 @@ class EmbyLibraryProvider(LibraryProvider):
     def __init__(self, *, logger: ProviderLogger, config: dict | None = None) -> None:
         """Parse configuration and prepare provider defaults."""
         super().__init__(logger=logger, config=config)
-        self.parsed_config = EmbyProviderConfig.model_validate(config or {})
+        self.parsed_config = msgspec.convert(config or {}, type=EmbyProviderConfig)
         self._client = self._create_client()
         self._user: LibraryUser | None = None
         self._sections: list[EmbyLibrarySection] = []

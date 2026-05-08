@@ -118,7 +118,7 @@ class _FakeRequest:
         return self._form_payload
 
 
-def _json_payload(raw: str) -> dict[str, object]:
+def _decoded_payload(raw: str) -> dict[str, object]:
     return cast(dict[str, object], json.loads(raw))
 
 
@@ -127,7 +127,7 @@ async def test_webhook_parses_markplayed_sample() -> None:
     """The mark-played sample should normalize to the series sync key."""
     request = _FakeRequest(
         headers={"content-type": "application/json"},
-        json_payload=_json_payload(_MARK_PLAYED_SAMPLE),
+        json_payload=_decoded_payload(_MARK_PLAYED_SAMPLE),
     )
 
     webhook = await WebhookParser.from_request(cast(Request, request))
@@ -152,7 +152,7 @@ async def test_webhook_parses_item_rate_samples(
     """The item.rate samples should parse as syncable favorite/rating events."""
     request = _FakeRequest(
         headers={"content-type": "application/json"},
-        json_payload=_json_payload(raw_payload),
+        json_payload=_decoded_payload(raw_payload),
     )
 
     webhook = await WebhookParser.from_request(cast(Request, request))
@@ -267,7 +267,7 @@ async def test_webhook_invalid_payload_structure_raises() -> None:
 @pytest.mark.asyncio
 async def test_webhook_unknown_event_parses_as_untyped_event() -> None:
     """Unsupported event values should parse and surface a None event_type."""
-    payload = _json_payload(_MARK_PLAYED_SAMPLE)
+    payload = _decoded_payload(_MARK_PLAYED_SAMPLE)
     payload["Event"] = "item.custom-event"
 
     request = _FakeRequest(

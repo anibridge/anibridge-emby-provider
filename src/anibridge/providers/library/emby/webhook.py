@@ -2,46 +2,54 @@
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+import msgspec
 from starlette.requests import Request
 
 
-class EmbyWebhookServer(BaseModel):
+class EmbyWebhookServer(msgspec.Struct, rename={"id": "Id"}):
     """Minimal Emby server payload."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    id: str = Field(..., alias="Id")
+    id: str
 
 
-class EmbyWebhookUser(BaseModel):
+class EmbyWebhookUser(msgspec.Struct, rename={"id": "Id"}):
     """Minimal Emby user payload."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    id: str | None = Field(None, alias="Id")
+    id: str | None = None
 
 
-class EmbyWebhookItem(BaseModel):
+class EmbyWebhookItem(
+    msgspec.Struct,
+    rename={
+        "id": "Id",
+        "type": "Type",
+        "series_id": "SeriesId",
+        "parent_id": "ParentId",
+    },
+):
     """Subset of Emby item fields used by AniBridge webhook logic."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    id: str | None = Field(None, alias="Id")
-    type: str | None = Field(None, alias="Type")
-    series_id: str | None = Field(None, alias="SeriesId")
-    parent_id: str | None = Field(None, alias="ParentId")
+    id: str | None = None
+    type: str | None = None
+    series_id: str | None = None
+    parent_id: str | None = None
 
 
-class EmbyWebhookPayload(BaseModel):
+class EmbyWebhookPayload(
+    msgspec.Struct,
+    rename={
+        "event": "Event",
+        "server": "Server",
+        "item": "Item",
+        "user": "User",
+    },
+):
     """Emby Webhook."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    event: str = Field(..., alias="Event")
-    server: EmbyWebhookServer = Field(..., alias="Server")
-    item: EmbyWebhookItem | None = Field(None, alias="Item")
-    user: EmbyWebhookUser | None = Field(None, alias="User")
+    event: str
+    server: EmbyWebhookServer
+    item: EmbyWebhookItem | None = None
+    user: EmbyWebhookUser | None = None
 
 
 class EmbyWebhookEventType(StrEnum):
@@ -70,10 +78,8 @@ class EmbyWebhookEventType(StrEnum):
     USER_POLICY_UPDATED = "user.policyupdated"
 
 
-class EmbyWebhook(BaseModel):
+class EmbyWebhook(msgspec.Struct):
     """Represents a normalized Emby webhook payload."""
-
-    model_config = ConfigDict(extra="ignore")
 
     payload: EmbyWebhookPayload
 
@@ -131,7 +137,7 @@ class WebhookParser:
                 payload_raw = payload_raw.decode("utf-8", "replace")
 
             try:
-                payload = EmbyWebhookPayload.model_validate_json(str(payload_raw))
+                payload = msgspec.json.decode(str(payload_raw), type=EmbyWebhookPayload)
             except Exception as e:
                 raise ValueError(
                     f"Invalid Emby payload JSON in 'data' field: {e}"
@@ -147,7 +153,7 @@ class WebhookParser:
 
             if isinstance(data, str):
                 try:
-                    payload = EmbyWebhookPayload.model_validate_json(data)
+                    payload = msgspec.json.decode(data, type=EmbyWebhookPayload)
                 except Exception as e:
                     raise ValueError(f"Invalid Emby webhook payload: {e}") from e
                 return EmbyWebhook(payload=payload)
@@ -156,7 +162,7 @@ class WebhookParser:
                 raise ValueError("Invalid payload structure: expected JSON object")
 
             try:
-                payload = EmbyWebhookPayload.model_validate(data)
+                payload = msgspec.convert(data, type=EmbyWebhookPayload)
             except Exception as e:
                 raise ValueError(f"Invalid Emby webhook payload: {e}") from e
 

@@ -1,21 +1,18 @@
 """Emby webhook implementation."""
 
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 import msgspec
 
-if TYPE_CHECKING:
-    from litestar.connection.request import Request
 
-
-class EmbyWebhookServer(msgspec.Struct, rename={"id": "Id"}):
+class EmbyWebhookServer(msgspec.Struct, rename="pascal"):
     """Minimal Emby server payload."""
 
     id: str
 
 
-class EmbyWebhookUser(msgspec.Struct, rename={"id": "Id"}):
+class EmbyWebhookUser(msgspec.Struct, rename="pascal"):
     """Minimal Emby user payload."""
 
     id: str | None = None
@@ -23,12 +20,7 @@ class EmbyWebhookUser(msgspec.Struct, rename={"id": "Id"}):
 
 class EmbyWebhookItem(
     msgspec.Struct,
-    rename={
-        "id": "Id",
-        "type": "Type",
-        "series_id": "SeriesId",
-        "parent_id": "ParentId",
-    },
+    rename="pascal",
 ):
     """Subset of Emby item fields used by AniBridge webhook logic."""
 
@@ -40,12 +32,7 @@ class EmbyWebhookItem(
 
 class EmbyWebhookPayload(
     msgspec.Struct,
-    rename={
-        "event": "Event",
-        "server": "Server",
-        "item": "Item",
-        "user": "User",
-    },
+    rename="pascal",
 ):
     """Emby Webhook."""
 
@@ -94,9 +81,8 @@ class EmbyWebhook(msgspec.Struct):
     @property
     def event_type(self) -> EmbyWebhookEventType | None:
         """Webhook event type normalized to enum values."""
-        raw = (self.payload.event or "").strip().lower()
         try:
-            return EmbyWebhookEventType(raw)
+            return EmbyWebhookEventType(self.payload.event)
         except ValueError:
             return None
 
@@ -122,56 +108,23 @@ class WebhookParser:
         """Read the media type portion of a Content-Type header."""
         if not content_type:
             return ""
-        return content_type.split(";", 1)[0].strip().lower()
+        return content_type.split(";", 1)[0].strip()
 
     @classmethod
-    async def from_request(cls, request: Request) -> EmbyWebhook:
-        """Create an Emby webhook instance from an incoming HTTP request."""
-        content_type = cls.media_type(request.headers.get("content-type"))
+    def from_inbound(
+        cls,
+        *,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> EmbyWebhook:
+        """Create a webhook instance from provider-base inbound request parts."""
+        content_type = cls.media_type(headers.get("content-type"))
+        if content_type not in ("application/json", ""):
+            raise ValueError("Provider-base Emby webhooks require a JSON payload")
 
-        if content_type in ("multipart/form-data", "application/x-www-form-urlencoded"):
-            form = await request.form()
-            payload_raw = form.get("data")
+        try:
+            payload = msgspec.json.decode(body, type=EmbyWebhookPayload)
+        except Exception as exc:
+            raise ValueError(f"Invalid Emby webhook payload: {exc}") from exc
 
-            if not payload_raw:
-                raise ValueError("Missing 'data' field in form request")
-
-            if isinstance(payload_raw, bytes):
-                payload_raw = payload_raw.decode("utf-8", "replace")
-
-            try:
-                payload = msgspec.json.decode(str(payload_raw), type=EmbyWebhookPayload)
-            except Exception as e:
-                raise ValueError(
-                    f"Invalid Emby payload JSON in 'data' field: {e}"
-                ) from e
-
-            return EmbyWebhook(payload=payload)
-
-        if content_type == "application/json":
-            try:
-                data = await request.json()
-            except Exception as e:
-                raise ValueError(f"Invalid JSON body: {e}") from e
-
-            if isinstance(data, str):
-                try:
-                    payload = msgspec.json.decode(data, type=EmbyWebhookPayload)
-                except Exception as e:
-                    raise ValueError(f"Invalid Emby webhook payload: {e}") from e
-                return EmbyWebhook(payload=payload)
-
-            if not isinstance(data, dict):
-                raise ValueError("Invalid payload structure: expected JSON object")
-
-            try:
-                payload = msgspec.convert(data, type=EmbyWebhookPayload)
-            except Exception as e:
-                raise ValueError(f"Invalid Emby webhook payload: {e}") from e
-
-            return EmbyWebhook(payload=payload)
-
-        raise ValueError(
-            f"Unsupported content type '{content_type}' for Emby webhook "
-            "(expected multipart/form-data or application/json)"
-        )
+        return EmbyWebhook(payload=payload)

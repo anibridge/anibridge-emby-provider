@@ -7,7 +7,7 @@ _This provider comes built-in with AniBridge, so you don't need to install it se
 ## Configuration
 
 ```yaml
-library_provider_config:
+source_provider_config:
   emby:
     url: ...
     token: ...

@@ -31,8 +31,8 @@ from anibridge.provider.base import (
     Rating,
     Record,
     RecordField,
-    RecordKind,
     RecordSpec,
+    RecordUnit,
     Ref,
     Role,
     ScanItem,
@@ -54,7 +54,7 @@ from anibridge.providers.emby.webhook import EmbyWebhookEventType, WebhookParser
 
 __all__ = ["EmbyProvider"]
 
-_PROGRESS_KIND = "progress"
+_USER_STATE_SURFACE = "user_state"
 _PAGE_SIZE = 50
 _TEMPORAL_FIELDS = frozenset(
     {
@@ -202,7 +202,7 @@ class EmbyProvider(Provider, SupportsScan, SupportsInboundChanges):
             ),
             records=(
                 RecordSpec(
-                    kind=Descriptor(_PROGRESS_KIND, RecordKind.PROGRESS),
+                    surface=_USER_STATE_SURFACE,
                     fields={
                         RecordField.STATUS: FieldSpec(
                             RecordField.STATUS,
@@ -274,7 +274,7 @@ class EmbyProvider(Provider, SupportsScan, SupportsInboundChanges):
         if query.native_node_kinds:
             accepted_kinds &= set(query.native_node_kinds)
         include_records = query.include_records and (
-            not query.native_record_kinds or _PROGRESS_KIND in query.native_record_kinds
+            not query.record_surfaces or _USER_STATE_SURFACE in query.record_surfaces
         )
         if not accepted_kinds:
             return Page(items=(), total=0)
@@ -529,19 +529,20 @@ class EmbyProvider(Provider, SupportsScan, SupportsInboundChanges):
             strict=True,
         ):
             episodes = tuple(raw_episodes)
-            history_dates: tuple[datetime, ...] = ()
+            units = self._record_units(episodes, requested)
+            history_dates: tuple[datetime, ...] = tuple(
+                value
+                for unit in units
+                if isinstance(
+                    value := unit.values.get(RecordField.LAST_ACTIVITY_AT), datetime
+                )
+            )
             if requested & _TEMPORAL_FIELDS:
-                history_dates = tuple(
-                    viewed_at.astimezone(UTC)
-                    for episode in episodes
-                    if (
-                        viewed_at := normalize_local_datetime(
-                            episode.user_data.last_played_date
-                            if episode.user_data
-                            else None
-                        )
-                    )
-                    is not None
+                history_dates = history_dates or tuple(
+                    value
+                    for unit in units
+                    for field in _TEMPORAL_FIELDS
+                    if isinstance(value := unit.values.get(field), datetime)
                 )
             record = self._record_for_season(
                 item,
@@ -549,6 +550,7 @@ class EmbyProvider(Provider, SupportsScan, SupportsInboundChanges):
                 requested,
                 episodes=episodes,
                 history_dates=history_dates,
+                units=units,
                 show_ids=show_ids,
             )
             if record.values:
@@ -600,7 +602,7 @@ class EmbyProvider(Provider, SupportsScan, SupportsInboundChanges):
 
         return Record(
             ref=Ref.anchor(str(item.id)),
-            kind=_PROGRESS_KIND,
+            surface=_USER_STATE_SURFACE,
             key=str(item.id),
             ids=self._external_ids(section, item),
             values=values,
@@ -615,6 +617,7 @@ class EmbyProvider(Provider, SupportsScan, SupportsInboundChanges):
         *,
         episodes: tuple[EmbyItem, ...],
         history_dates: tuple[datetime, ...],
+        units: tuple[RecordUnit, ...],
         show_ids: tuple[ExternalId, ...],
     ) -> Record:
         requested = fields or _ALL_RECORD_FIELDS
@@ -658,11 +661,46 @@ class EmbyProvider(Provider, SupportsScan, SupportsInboundChanges):
         season_ref = Ref.anchor(str(show.id)).child("season", index)
         return Record(
             ref=season_ref,
-            kind=_PROGRESS_KIND,
+            surface=_USER_STATE_SURFACE,
             key=f"{show.id}:s{index}",
             ids=self._season_external_ids(show_ids, index),
             values=values,
+            units=units,
         )
+
+    @staticmethod
+    def _record_units(
+        episodes: tuple[EmbyItem, ...],
+        requested: frozenset[RecordField],
+    ) -> tuple[RecordUnit, ...]:
+        if not requested & _TEMPORAL_FIELDS:
+            return ()
+
+        units: list[RecordUnit] = []
+        for episode in episodes:
+            if episode.index_number is None:
+                continue
+            viewed_at = normalize_local_datetime(
+                episode.user_data.last_played_date if episode.user_data else None
+            )
+            if viewed_at is None:
+                continue
+            at = viewed_at.astimezone(UTC)
+            values: dict[RecordField, Value] = {}
+            if RecordField.STARTED_AT in requested:
+                values[RecordField.STARTED_AT] = at
+            if RecordField.LAST_ACTIVITY_AT in requested:
+                values[RecordField.LAST_ACTIVITY_AT] = at
+            if RecordField.FINISHED_AT in requested:
+                values[RecordField.FINISHED_AT] = at
+            units.append(
+                RecordUnit(
+                    index=int(episode.index_number),
+                    key=str(episode.id) if episode.id is not None else None,
+                    values=values,
+                )
+            )
+        return tuple(units)
 
     async def _item_status(
         self,

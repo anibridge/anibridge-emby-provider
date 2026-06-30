@@ -30,6 +30,7 @@ from anibridge.provider.base import (
     Provider,
     Rating,
     Record,
+    RecordChange,
     RecordField,
     RecordSpec,
     RecordUnit,
@@ -433,10 +434,13 @@ class EmbyProvider(Provider, SupportsScan, SupportsInboundChanges):
             if payload.account_id != self._account.key:
                 return InboundResult(matched=False)
 
-        return InboundResult(
-            matched=True,
-            changes=(NodeChange(ref=Ref.anchor(payload.top_level_item_id)),),
+        ref = Ref.anchor(payload.top_level_item_id)
+        change = (
+            NodeChange(ref=ref)
+            if payload.event_type is EmbyWebhookEventType.LIBRARY_NEW
+            else RecordChange(ref=ref, surface=_USER_STATE_SURFACE)
         )
+        return InboundResult(matched=True, changes=(change,))
 
     async def _node_for_item(
         self,
